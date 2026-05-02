@@ -13,6 +13,7 @@ from .classifier import Classification
 from .config import Config
 from .providers.base import BaseProvider
 from .providers.anthropic_provider import AnthropicProvider
+from .providers.gemini_provider import GeminiProvider
 from .providers.ollama_provider import OllamaProvider
 from .providers.openai_provider import OpenAIProvider
 from .providers.ruflo_provider import RufloProvider
@@ -34,6 +35,7 @@ class Router:
             "ollama": OllamaProvider(host=cfg.ollama_host),
             "openai": OpenAIProvider(),
             "anthropic": AnthropicProvider(),
+            "gemini": GeminiProvider(),
             "ruflo": RufloProvider(),
         }
 
@@ -64,19 +66,31 @@ class Router:
         c = classification.complexity
 
         if task in ("code", "security") or c >= 0.7:
-            for prov_name, key in [("anthropic", "anthropic_large"), ("openai", "openai_large")]:
+            for prov_name, key in [
+                ("anthropic", "anthropic_large"),
+                ("openai", "openai_large"),
+                ("gemini", "gemini_large"),
+            ]:
                 p = self.providers[prov_name]
                 if p.is_available():
                     return RouteDecision(p, models[key], f"{task}/high complexity → {prov_name} large")
 
         if task in ("explain", "reasoning") or c >= 0.4:
-            for prov_name, key in [("anthropic", "anthropic_mid"), ("openai", "openai_large")]:
+            for prov_name, key in [
+                ("anthropic", "anthropic_mid"),
+                ("openai", "openai_large"),
+                ("gemini", "gemini_mid"),
+            ]:
                 p = self.providers[prov_name]
                 if p.is_available():
                     return RouteDecision(p, models[key], f"{task} → {prov_name} mid")
 
         # Cheap / simple — prefer the small models.
-        for prov_name, key in [("anthropic", "anthropic_small"), ("openai", "openai_small")]:
+        for prov_name, key in [
+            ("gemini", "gemini_small"),
+            ("anthropic", "anthropic_small"),
+            ("openai", "openai_small"),
+        ]:
             p = self.providers[prov_name]
             if p.is_available():
                 return RouteDecision(p, models[key], "simple query → small model")

@@ -63,6 +63,62 @@ def _require_init() -> Config:
     return load_config()
 
 
+def _explain_provider_error(provider_name: str, model: str, err: Exception) -> None:
+    """Render a friendly, actionable error for provider failures.
+
+    We pattern-match on common cases (Ollama not running, missing SDK, missing
+    API key, auth failure, model not found) and surface a remediation hint.
+    Falls back to the raw error so debugging info is never hidden.
+    """
+    msg = str(err)
+    low = msg.lower()
+    console.print(f"[red bold]Provider error[/red bold] ([cyan]{provider_name}[/cyan] / [cyan]{model}[/cyan])")
+    console.print(f"[red]{msg}[/red]")
+
+    hint = None
+    if provider_name == "ollama" and ("connection refused" in low or "max retries" in low or "newconnectionerror" in low):
+        hint = (
+            "Ollama doesn't appear to be running.\n"
+            "  • Install:  brew install ollama   (or download from https://ollama.com)\n"
+            "  • Start:    ollama serve &\n"
+            f"  • Pull:     ollama pull {model}\n"
+            "  • Or skip the LLM call entirely with: memory-router build-context \"...\""
+        )
+    elif "no openai api key" in low or ("openai" in low and "api key" in low):
+        hint = "Add an OpenAI key:  memory-router auth openai"
+    elif "no anthropic api key" in low or ("anthropic" in low and "api key" in low):
+        hint = "Add an Anthropic key:  memory-router auth anthropic"
+    elif "no gemini api key" in low or ("gemini" in low and "api key" in low):
+        hint = "Add a Gemini key:  memory-router auth gemini"
+    elif "package not installed" in low or "no module named" in low:
+        if "openai" in low:
+            hint = "Install the OpenAI SDK:  pip install \"memory-router[openai]\""
+        elif "anthropic" in low:
+            hint = "Install the Anthropic SDK:  pip install \"memory-router[anthropic]\""
+        elif "google" in low or "gemini" in low or "generativeai" in low:
+            hint = "Install the Gemini SDK:  pip install \"memory-router[gemini]\""
+        else:
+            hint = "Install all optional providers:  pip install \"memory-router[all]\""
+    elif "401" in msg or "unauthorized" in low or "invalid api key" in low or "authentication" in low:
+        hint = (
+            f"The {provider_name} API key looks invalid or expired.\n"
+            f"  • Re-add:  memory-router auth {provider_name}\n"
+            f"  • Remove:  memory-router auth {provider_name} --delete"
+        )
+    elif "404" in msg or "not found" in low or "does not exist" in low or "model_not_found" in low:
+        hint = (
+            f"The model id '{model}' isn't available on this account.\n"
+            f"  • Edit ~/.memory-router/config.yaml under `models:` to a model your API key supports."
+        )
+    elif "429" in msg or "rate limit" in low or "quota" in low:
+        hint = "Rate-limited or out of quota. Wait a moment, or switch providers via `memory-router config set mode hybrid`."
+    elif "timeout" in low or "timed out" in low:
+        hint = "Request timed out. Check your network, or try a smaller model."
+
+    if hint:
+        console.print(Panel(hint, title="What to try", border_style="yellow"))
+
+
 def _print_routing_header(model: str, used_memories, est_saved_pct: int):
     if used_memories:
         m = used_memories[0]
@@ -79,64 +135,89 @@ def _print_routing_header(model: str, used_memories, est_saved_pct: int):
 
 # ---------- top-level commands ----------
 
-@app.callback(invoke_without_command=True)
+@app.callback()
 def main(
-    ctx: typer.Context,
-    query: Optional[str] = typer.Argument(None, help="Ask a question directly."),
-    no_memory: bool = typer.Option(False, "--no-memory", help="Skip memory retrieval for this query."),
-    local: bool = typer.Option(False, "--local", help="Force local model only."),
-    session: str = typer.Option("default", "--session", help="Conversation session id."),
     version: bool = typer.Option(False, "--version", help="Print version and exit."),
 ):
-    """Default action: if a query is given, ask it. Otherwise show help."""
+    """Local-first context optimization layer. We don't replace LLMs — we optimize how they are used."""
     if version:
         console.print(f"memory-router {__version__}")
         raise typer.Exit()
 
-    if ctx.invoked_subcommand is not None:
-        return
 
-    if not query:
-        console.print(ctx.get_help())
-        raise typer.Exit()
-
+@app.command("ask")
+def ask_cmd(
+    query: str = typer.Argument(..., help="The question to ask."),
+    no_memory: bool = typer.Option(False, "--no-memory", help="Skip memory retrieval for this query."),
+    local: bool = typer.Option(False, "--local", help="Force local model only."),
+    session: str = typer.Option("default", "--session", help="Conversation session id."),
+):
+    """Ask a question — builds context, routes to a model, returns the answer."""
     _ask(query=query, no_memory=no_memory, local=local, session=session)
 
 
 def _ask(query: str, no_memory: bool, local: bool, session: str):
     cfg = _require_init()
-    classification = classify(query)
 
-    mem_store = MemoryStore()
-    conv_store = ConversationStore()
+    # Stage 1: classify + build context. Any failure here is local-only and
+    # almost always indicates a corrupted SQLite file or bad config.
+    try:
+        classification = classify(query)
+        mem_store = MemoryStore()
+        conv_store = ConversationStore()
+        built = build_context(
+            query=query,
+            classification=classification,
+            cfg=cfg,
+            mem_store=mem_store,
+            conv_store=conv_store,
+            use_memory=not no_memory,
+            session_id=session,
+        )
+    except Exception as e:
+        console.print(Panel(
+            f"[red]Failed to build context:[/red] {e}\n\n"
+            "This usually means a corrupted SQLite file under ~/.memory-router/.\n"
+            "Try: [bold]memory-router memory clear --yes[/bold] or remove the directory and re-init.",
+            title="Context build error",
+            border_style="red",
+        ))
+        raise typer.Exit(code=2)
 
-    built = build_context(
-        query=query,
-        classification=classification,
-        cfg=cfg,
-        mem_store=mem_store,
-        conv_store=conv_store,
-        use_memory=not no_memory,
-        session_id=session,
-    )
-
-    router = Router(cfg)
-    decision = router.route(classification, force_local=local)
+    # Stage 2: routing. Should never fail, but be defensive.
+    try:
+        router = Router(cfg)
+        decision = router.route(classification, force_local=local)
+    except Exception as e:
+        console.print(Panel(
+            f"[red]Router failed:[/red] {e}\n\n"
+            "Check `memory-router config show` and re-run `memory-router init` if needed.",
+            title="Routing error",
+            border_style="red",
+        ))
+        raise typer.Exit(code=2)
 
     saved = percent_saved(built.full_history_tokens, built.sent_tokens)
     _print_routing_header(decision.model, built.used_memories, saved)
 
+    # Stage 3: provider call — most likely failure point.
     try:
         result = decision.provider.complete(decision.model, built.messages)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Cancelled.[/yellow]")
+        raise typer.Exit(code=130)
     except Exception as e:
-        console.print(f"[red]Provider error:[/red] {e}")
+        _explain_provider_error(decision.provider.name, decision.model, e)
         raise typer.Exit(code=2)
 
     console.print(Panel(result.text or "[no response]", title="Answer", border_style="green"))
 
-    # Log the turn locally so future queries benefit from short-term memory.
-    conv_store.add(Message(session_id=session, role="user", content=query))
-    conv_store.add(Message(session_id=session, role="assistant", content=result.text or ""))
+    # Log the turn locally — non-fatal if this fails (just warn).
+    try:
+        conv_store.add(Message(session_id=session, role="user", content=query))
+        conv_store.add(Message(session_id=session, role="assistant", content=result.text or ""))
+    except Exception as e:
+        console.print(f"[yellow]Warning: could not save conversation turn — {e}[/yellow]")
 
 
 # ---------- build-context (no LLM call) ----------
@@ -157,20 +238,28 @@ def build_context_cmd(
     already use. Memory Router stays a context layer; you keep your tools.
     """
     cfg = _require_init()
-    classification = classify(query)
-
-    mem_store = MemoryStore()
-    conv_store = ConversationStore()
-
-    built = build_context(
-        query=query,
-        classification=classification,
-        cfg=cfg,
-        mem_store=mem_store,
-        conv_store=conv_store,
-        use_memory=not no_memory,
-        session_id=session,
-    )
+    try:
+        classification = classify(query)
+        mem_store = MemoryStore()
+        conv_store = ConversationStore()
+        built = build_context(
+            query=query,
+            classification=classification,
+            cfg=cfg,
+            mem_store=mem_store,
+            conv_store=conv_store,
+            use_memory=not no_memory,
+            session_id=session,
+        )
+    except Exception as e:
+        console.print(Panel(
+            f"[red]Failed to build context:[/red] {e}\n\n"
+            "This usually means a corrupted SQLite file under ~/.memory-router/.\n"
+            "Try: [bold]memory-router memory clear --yes[/bold] or remove the directory and re-init.",
+            title="Context build error",
+            border_style="red",
+        ))
+        raise typer.Exit(code=2)
 
     # Show which memories were pulled in.
     if built.used_memories:
@@ -239,6 +328,10 @@ def init():
             key = Prompt.ask("Anthropic API key", password=True)
             backend = set_secret("anthropic", key)
             console.print(f"[green]Saved Anthropic key to {backend}.[/green]")
+        if Confirm.ask("Add a Google Gemini API key now?", default=False):
+            key = Prompt.ask("Gemini API key", password=True)
+            backend = set_secret("gemini", key)
+            console.print(f"[green]Saved Gemini key to {backend}.[/green]")
 
     if mode in ("local", "hybrid"):
         host = Prompt.ask("Ollama host", default=cfg.ollama_host)
@@ -253,7 +346,7 @@ def init():
 
 @app.command()
 def auth(
-    provider: str = typer.Argument(..., help="Provider name: openai | anthropic | ..."),
+    provider: str = typer.Argument(..., help="Provider name: openai | anthropic | gemini | ..."),
     delete: bool = typer.Option(False, "--delete", help="Remove the saved credential."),
 ):
     """Store an API key in the OS keychain (or a 0600-permission fallback file)."""
@@ -293,6 +386,59 @@ def config_set(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=1)
     console.print(f"[green]Set {key} = {getattr(cfg, key)}.[/green]")
+
+
+# ---------- doctor ----------
+
+@app.command()
+def doctor():
+    """Run a self-check: config, storage, and provider availability."""
+    table = Table(title="Memory Router Doctor", show_lines=False)
+    table.add_column("Check", style="cyan")
+    table.add_column("Status")
+    table.add_column("Detail", style="dim")
+
+    # 1. Initialized?
+    if is_initialized():
+        table.add_row("config file", "[green]ok[/green]", str(CONFIG_PATH))
+        cfg = load_config()
+    else:
+        table.add_row("config file", "[red]missing[/red]", "Run: memory-router init")
+        console.print(table)
+        raise typer.Exit(code=1)
+
+    # 2. Storage dirs + DBs.
+    try:
+        ensure_dirs()
+        ms = MemoryStore()
+        cs = ConversationStore()
+        n_mem = len(ms.list_all(limit=1_000_000))
+        n_msg = len(cs.all_for_session("default"))
+        table.add_row("memory palace db", "[green]ok[/green]", f"{n_mem} memories")
+        table.add_row("conversations db", "[green]ok[/green]", f"{n_msg} messages in default session")
+    except Exception as e:
+        table.add_row("storage", "[red]error[/red]", str(e))
+
+    # 3. Providers — check each one's availability.
+    try:
+        router = Router(cfg)
+        for name, p in router.providers.items():
+            try:
+                ok = p.is_available()
+            except Exception as e:
+                ok = False
+                detail = f"error: {e}"
+            else:
+                detail = "ready" if ok else "not configured / unavailable"
+            table.add_row(f"provider:{name}", "[green]ok[/green]" if ok else "[yellow]–[/yellow]", detail)
+    except Exception as e:
+        table.add_row("router", "[red]error[/red]", str(e))
+
+    # 4. Mode summary.
+    table.add_row("mode", "[green]ok[/green]", cfg.mode)
+    table.add_row("memory_enabled", "[green]ok[/green]" if cfg.memory_enabled else "[yellow]off[/yellow]", str(cfg.memory_enabled))
+
+    console.print(table)
 
 
 # ---------- memory subcommands ----------
@@ -370,5 +516,30 @@ def memory_clear(
     console.print(f"[green]Cleared {n} memories.[/green]")
 
 
-if __name__ == "__main__":
+# Names that should be dispatched to subcommands as-is. Anything else that
+# looks like a free-form query gets the implicit `ask` shorthand.
+_KNOWN_COMMANDS = {
+    "ask", "init", "auth", "config", "memory", "build-context", "doctor",
+    "--help", "-h", "--version",
+}
+
+
+def entry() -> None:
+    """Console entry point.
+
+    Lets users write `memory-router "Explain bond convexity"` as shorthand for
+    `memory-router ask "Explain bond convexity"`. We only rewrite argv when the
+    first non-flag token is clearly a free-form query (i.e. not a known
+    subcommand) so real subcommands like `init` keep working.
+    """
+    import sys
+    argv = sys.argv[1:]
+    # Find the first non-flag token.
+    first_pos_idx = next((i for i, a in enumerate(argv) if not a.startswith("-")), None)
+    if first_pos_idx is not None and argv[first_pos_idx] not in _KNOWN_COMMANDS:
+        sys.argv.insert(1 + first_pos_idx, "ask")
     app()
+
+
+if __name__ == "__main__":
+    entry()

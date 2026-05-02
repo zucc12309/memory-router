@@ -9,7 +9,7 @@ What it does:
 1. **Stores structured memory locally** in a Memory Palace (task, domain, concepts, importance).
 2. **Retrieves only the relevant context** for each query instead of dragging your full chat history.
 3. **Builds an optimized prompt** with the right memories + a short summary + the last few turns.
-4. **Optionally routes the prompt** to the best available LLM — local (Ollama), OpenAI, Anthropic, or an optional Ruflo backend.
+4. **Optionally routes the prompt** to the best available LLM — local (Ollama), OpenAI, Anthropic, Google Gemini, or an optional Ruflo backend.
 5. Or just **prints the optimized prompt** for you to paste into ChatGPT, Claude.ai, Claude Code, VS Code, or any tool you already use.
 
 Memory Router works *alongside* your existing tools. Your memory stays on your machine; only the trimmed context for the current question is sent to whichever model you pick.
@@ -40,7 +40,7 @@ These are different products and Memory Router uses the API path:
 | Memory Router | ❌ Cannot use a subscription | ✅ Uses your API key |
 | Billing | Flat monthly fee | Pay-per-use (tokens in + tokens out) |
 
-You'll need to create API keys at [platform.openai.com](https://platform.openai.com) or [console.anthropic.com](https://console.anthropic.com) to use those providers. For local-only mode you don't need any keys — just [Ollama](https://ollama.com).
+You'll need API keys from [platform.openai.com](https://platform.openai.com), [console.anthropic.com](https://console.anthropic.com), or [aistudio.google.com](https://aistudio.google.com/app/apikey) (Gemini) to use those providers. For local-only mode you don't need any keys — just [Ollama](https://ollama.com).
 
 ---
 
@@ -52,6 +52,7 @@ pip install memory-router
 # Optional providers
 pip install "memory-router[openai]"
 pip install "memory-router[anthropic]"
+pip install "memory-router[gemini]"
 pip install "memory-router[all]"
 ```
 
@@ -72,7 +73,7 @@ memory-router init
 You'll be asked to pick a mode:
 
 - **local** — only local models (Ollama). No API keys needed. Most private.
-- **api** — OpenAI / Anthropic only. Requires API keys.
+- **api** — OpenAI / Anthropic / Gemini only. Requires API keys.
 - **hybrid** — local for simple queries, API for complex ones. Recommended.
 - **ruflo** — adds Ruflo as a provider for multi-agent / agentic workflows.
 
@@ -81,6 +82,7 @@ Then add credentials separately so they go straight to your OS keychain:
 ```bash
 memory-router auth openai
 memory-router auth anthropic
+memory-router auth gemini
 ```
 
 ---

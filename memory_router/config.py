@@ -33,6 +33,9 @@ DEFAULT_MODELS = {
     "anthropic_small": "claude-haiku-4-5-20251001",
     "anthropic_mid": "claude-sonnet-4-6",
     "anthropic_large": "claude-opus-4-7",
+    "gemini_small": "gemini-1.5-flash",
+    "gemini_mid": "gemini-1.5-pro",
+    "gemini_large": "gemini-1.5-pro",
 }
 
 
