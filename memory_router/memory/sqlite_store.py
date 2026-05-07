@@ -11,7 +11,9 @@ process is fine for a CLI; we open lazily and let SQLite handle locking.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import stat
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -80,6 +82,10 @@ def _connect(path: Path, schema: str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(schema)
     conn.commit()
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except Exception:
+        pass
     return conn
 
 
@@ -109,6 +115,14 @@ class MemoryStore:
         )
         self.conn.commit()
         return cur.lastrowid
+
+    def has_content(self, content: str) -> bool:
+        """Return True if an identical memory note already exists."""
+        row = self.conn.execute(
+            "SELECT 1 FROM memories WHERE content = ? LIMIT 1",
+            (content,),
+        ).fetchone()
+        return row is not None
 
     def delete(self, memory_id: int) -> bool:
         cur = self.conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))

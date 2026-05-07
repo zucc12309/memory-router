@@ -1,9 +1,11 @@
-"""Google Gemini provider stub.
+"""Google Gemini provider — uses the modern `google-genai` SDK.
 
-Install with: `pip install memory-router[gemini]`. Uses the official
-`google-generativeai` SDK. Gemini's API takes a system prompt out-of-band
-(via `system_instruction`), so we split it from the messages list and convert
-the OpenAI-style {role, content} format into Gemini's {role, parts} format.
+The legacy `google-generativeai` package is deprecated, so we use
+`google-genai` (Google GenAI SDK). Install with:
+    pip install memory-router[gemini]
+
+Gemini takes the system prompt out-of-band via GenerateContentConfig, and uses
+{role: "user"|"model", parts: [...]} instead of OpenAI's {role, content}.
 """
 
 from __future__ import annotations
@@ -19,57 +21,57 @@ class GeminiProvider(BaseProvider):
     name = "gemini"
 
     def __init__(self):
-        self._configured = False
+        self._client = None
         self._api_key = get_secret("gemini")
 
-    def _ensure_configured(self):
-        if self._configured:
-            return
+    def _ensure_client(self):
+        if self._client is not None:
+            return self._client
         try:
-            import google.generativeai as genai  # type: ignore
+            from google import genai  # type: ignore
         except ImportError as e:
             raise RuntimeError(
-                "google-generativeai package not installed. "
-                "Run: pip install memory-router[gemini]"
+                "google-genai package not installed. Run: pip install memory-router[gemini]"
             ) from e
         if not self._api_key:
             raise RuntimeError(
                 "No Gemini API key found. Run `memory-router auth gemini` to add one."
             )
-        genai.configure(api_key=self._api_key)
-        self._configured = True
-        return genai
+        self._client = genai.Client(api_key=self._api_key)
+        return self._client
 
     def is_available(self) -> bool:
         if not self._api_key:
             return False
         try:
-            import google.generativeai  # noqa: F401
+            from google import genai  # type: ignore  # noqa: F401
             return True
         except ImportError:
             return False
 
     def complete(self, model: str, messages: List[dict], **kwargs) -> ProviderResult:
-        import google.generativeai as genai  # type: ignore
-        self._ensure_configured()
+        client = self._ensure_client()
+        from google.genai import types  # type: ignore
 
-        # Pull system prompt out — Gemini takes it as `system_instruction`.
+        # Pull system prompt(s) — Gemini takes them as `system_instruction`.
         system_parts = [m["content"] for m in messages if m.get("role") == "system"]
         chat = [m for m in messages if m.get("role") != "system"]
 
-        # Convert OpenAI roles to Gemini roles: assistant -> model, user -> user.
-        gemini_history = []
-        for m in chat[:-1]:  # everything except the latest user turn becomes history
+        # Convert history into Gemini's content/parts shape.
+        # OpenAI roles: user / assistant / system  →  Gemini roles: user / model.
+        history = []
+        for m in chat[:-1]:
             role = "model" if m["role"] == "assistant" else "user"
-            gemini_history.append({"role": role, "parts": [m["content"]]})
+            history.append({"role": role, "parts": [{"text": m["content"]}]})
 
         latest = chat[-1]["content"] if chat else ""
 
-        model_obj = genai.GenerativeModel(
-            model_name=model,
-            system_instruction="\n\n".join(system_parts) if system_parts else None,
-        )
-        chat_session = model_obj.start_chat(history=gemini_history)
+        config_kwargs = {}
+        if system_parts:
+            config_kwargs["system_instruction"] = "\n\n".join(system_parts)
+        cfg = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+
+        chat_session = client.chats.create(model=model, history=history, config=cfg)
         resp = chat_session.send_message(latest)
 
         text = getattr(resp, "text", "") or ""

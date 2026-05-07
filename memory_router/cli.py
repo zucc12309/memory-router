@@ -7,7 +7,9 @@ readable output.
 
 from __future__ import annotations
 
+import json
 import sys
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -18,6 +20,7 @@ from rich.panel import Panel
 from rich.tree import Tree
 
 from . import __version__
+from .benchmark import BenchmarkSummary, load_cases, run_suite
 from .classifier import classify
 from .config import (
     CONFIG_PATH,
@@ -30,11 +33,12 @@ from .config import (
     set_value,
 )
 from .context_builder import build_context
+from .memory.auto_capture import capture_turn
 from .memory.palace import build_palace
 from .memory.sqlite_store import ConversationStore, Memory, MemoryStore, Message
 from .router import Router
 from .security.keychain import delete_secret, get_secret, set_secret
-from .utils.tokens import percent_saved
+from .utils.tokens import percent_saved, estimate_cost_usd, format_cost
 
 
 app = typer.Typer(
@@ -119,7 +123,7 @@ def _explain_provider_error(provider_name: str, model: str, err: Exception) -> N
         console.print(Panel(hint, title="What to try", border_style="yellow"))
 
 
-def _print_routing_header(model: str, used_memories, est_saved_pct: int):
+def _print_routing_header(provider_name: str, model: str, reason: str, used_memories, est_saved_pct: int):
     if used_memories:
         m = used_memories[0]
         memory_path = f"{m.task.title()} > {m.domain.title()}"
@@ -127,7 +131,8 @@ def _print_routing_header(model: str, used_memories, est_saved_pct: int):
             memory_path += " > " + ", ".join(m.concepts[:2])
     else:
         memory_path = "(none)"
-    console.print(f"[bold]Using:[/bold] {model}")
+    console.print(f"[bold]Using:[/bold] {provider_name} / {model}")
+    console.print(f"[bold]Route:[/bold] {reason}")
     console.print(f"[bold]Memory used:[/bold] {memory_path}")
     console.print(f"[bold]Estimated tokens saved:[/bold] {est_saved_pct}%")
     console.print()
@@ -151,12 +156,20 @@ def ask_cmd(
     no_memory: bool = typer.Option(False, "--no-memory", help="Skip memory retrieval for this query."),
     local: bool = typer.Option(False, "--local", help="Force local model only."),
     session: str = typer.Option("default", "--session", help="Conversation session id."),
+    provider: Optional[str] = typer.Option(
+        None, "--provider", help="Pin a provider for this call: openai | anthropic | gemini | ollama."
+    ),
+    model: Optional[str] = typer.Option(
+        None, "--model", help="Pin a specific model id (e.g. gemini-2.5-flash, gpt-4o-mini)."
+    ),
 ):
     """Ask a question — builds context, routes to a model, returns the answer."""
-    _ask(query=query, no_memory=no_memory, local=local, session=session)
+    _ask(query=query, no_memory=no_memory, local=local, session=session,
+         override_provider=provider, override_model=model)
 
 
-def _ask(query: str, no_memory: bool, local: bool, session: str):
+def _ask(query: str, no_memory: bool, local: bool, session: str,
+         override_provider: Optional[str] = None, override_model: Optional[str] = None):
     cfg = _require_init()
 
     # Stage 1: classify + build context. Any failure here is local-only and
@@ -187,7 +200,12 @@ def _ask(query: str, no_memory: bool, local: bool, session: str):
     # Stage 2: routing. Should never fail, but be defensive.
     try:
         router = Router(cfg)
-        decision = router.route(classification, force_local=local)
+        decision = router.route(
+            classification,
+            force_local=local,
+            override_provider=override_provider,
+            override_model=override_model,
+        )
     except Exception as e:
         console.print(Panel(
             f"[red]Router failed:[/red] {e}\n\n"
@@ -198,7 +216,9 @@ def _ask(query: str, no_memory: bool, local: bool, session: str):
         raise typer.Exit(code=2)
 
     saved = percent_saved(built.full_history_tokens, built.sent_tokens)
-    _print_routing_header(decision.model, built.used_memories, saved)
+    _print_routing_header(decision.provider.name, decision.model, decision.reason, built.used_memories, saved)
+    if cfg.mode == "hybrid" and decision.provider.name != "ollama":
+        console.print("[yellow]Note: this prompt will be sent to a remote provider.[/yellow]")
 
     # Stage 3: provider call — most likely failure point.
     try:
@@ -211,6 +231,40 @@ def _ask(query: str, no_memory: bool, local: bool, session: str):
         raise typer.Exit(code=2)
 
     console.print(Panel(result.text or "[no response]", title="Answer", border_style="green"))
+
+    # Real token usage + cost. Uses the SDK's reported numbers when available
+    # (real billed tokens), the estimator otherwise. The "saved" line compares
+    # the optimized input against what a naive full-history send would have used.
+    real_in = result.input_tokens or built.sent_tokens
+    real_out = result.output_tokens or 0
+    naive_in = built.full_history_tokens or built.sent_tokens
+    real_saved = percent_saved(naive_in, real_in)
+    cost = estimate_cost_usd(result.model, real_in, real_out)
+
+    token_table = Table.grid(padding=(0, 2))
+    token_table.add_column(style="cyan", justify="right")
+    token_table.add_column()
+    token_table.add_row("Input tokens (real):", f"{real_in:,}")
+    token_table.add_row("Output tokens (real):", f"{real_out:,}")
+    token_table.add_row("Naive baseline (est.):", f"~{naive_in:,}")
+    token_table.add_row("Saved on input:", f"{real_saved}%")
+    token_table.add_row("Cost (estimate):", format_cost(cost))
+    console.print(Panel(token_table, title="Token usage", border_style="dim"))
+
+    # Promote useful turns into long-term memory when the config allows it.
+    try:
+        memory_id = capture_turn(
+            query=query,
+            answer=result.text or "",
+            classification=classification,
+            cfg=cfg,
+            store=mem_store,
+            allow_capture=not no_memory,
+        )
+        if memory_id is not None:
+            console.print(f"[dim]Auto-saved memory #{memory_id}.[/dim]")
+    except Exception as e:
+        console.print(f"[yellow]Warning: could not auto-save memory — {e}[/yellow]")
 
     # Log the turn locally — non-fatal if this fails (just warn).
     try:
@@ -286,14 +340,7 @@ def build_context_cmd(
             console.print(Panel(m["content"], title=m["role"], border_style="green"))
         return
 
-    # Flat copy-paste prompt: concatenate system notes, then the user query.
-    system_blocks = [m["content"] for m in built.messages if m.get("role") == "system"]
-    user_blocks = [m["content"] for m in built.messages if m.get("role") == "user"]
-    parts = []
-    if system_blocks:
-        parts.append("\n\n".join(system_blocks))
-    parts.append(user_blocks[-1] if user_blocks else query)
-    optimized_prompt = "\n\n---\n\n".join(parts)
+    optimized_prompt = _render_flat_prompt(built.messages)
 
     console.print("[bold green]Optimized prompt:[/bold green]")
     console.print(optimized_prompt)
@@ -318,6 +365,11 @@ def init():
     cfg.mode = mode
 
     cfg.memory_enabled = Confirm.ask("Enable Memory Palace?", default=True)
+    cfg.auto_capture_memories = (
+        Confirm.ask("Auto-save useful turns into Memory Palace?", default=True)
+        if cfg.memory_enabled
+        else False
+    )
 
     if mode in ("api", "hybrid"):
         if Confirm.ask("Add an OpenAI API key now?", default=False):
@@ -436,9 +488,112 @@ def doctor():
 
     # 4. Mode summary.
     table.add_row("mode", "[green]ok[/green]", cfg.mode)
-    table.add_row("memory_enabled", "[green]ok[/green]" if cfg.memory_enabled else "[yellow]off[/yellow]", str(cfg.memory_enabled))
+    table.add_row(
+        "memory_enabled",
+        "[green]ok[/green]" if cfg.memory_enabled else "[yellow]off[/yellow]",
+        str(cfg.memory_enabled),
+    )
+    table.add_row(
+        "auto_capture_memories",
+        "[green]ok[/green]" if cfg.auto_capture_memories else "[yellow]off[/yellow]",
+        str(cfg.auto_capture_memories),
+    )
 
     console.print(table)
+
+
+def _format_score(score: Optional[float]) -> str:
+    return "n/a" if score is None else f"{score:.2f}"
+
+
+def _format_delta(delta: Optional[float]) -> str:
+    if delta is None:
+        return "n/a"
+    return f"{delta:+.2f}"
+
+
+def _render_benchmark_report(report: BenchmarkSummary) -> None:
+    table = Table(title="Memory Router Benchmark", show_lines=False)
+    table.add_column("Case", style="cyan")
+    table.add_column("Raw", justify="right")
+    table.add_column("Baseline", justify="right")
+    table.add_column("Optimized", justify="right")
+    table.add_column("Saved", justify="right")
+    table.add_column("Score B", justify="right")
+    table.add_column("Score O", justify="right")
+    table.add_column("Delta", justify="right")
+    table.add_column("Status", style="yellow")
+
+    for record in report.cases:
+        delta = None
+        if record.baseline_score is not None and record.optimized_score is not None:
+            delta = record.optimized_score - record.baseline_score
+        table.add_row(
+            record.name,
+            str(record.raw_tokens),
+            str(record.baseline_tokens),
+            str(record.optimized_tokens),
+            f"{record.raw_saved_pct}%",
+            _format_score(record.baseline_score),
+            _format_score(record.optimized_score),
+            _format_delta(delta),
+            record.status if record.note else "ok",
+        )
+
+    console.print(table)
+
+    summary = [
+        f"avg raw≈{report.raw_tokens_avg:.0f}",
+        f"avg baseline≈{report.baseline_tokens_avg:.0f}",
+        f"avg optimized≈{report.optimized_tokens_avg:.0f}",
+        f"avg saved≈{report.raw_saved_pct_avg:.1f}%",
+    ]
+    if report.baseline_score_avg is not None and report.optimized_score_avg is not None:
+        summary.extend(
+            [
+                f"avg score baseline≈{report.baseline_score_avg:.2f}",
+                f"avg score optimized≈{report.optimized_score_avg:.2f}",
+                f"avg delta≈{report.quality_delta_avg:.2f}",
+            ]
+        )
+    console.print("[bold]Summary:[/bold] " + "  ".join(summary))
+    if report.note:
+        console.print(f"[yellow]{report.note}[/yellow]")
+
+
+# ---------- benchmark ----------
+
+@app.command()
+def benchmark(
+    cases: Optional[Path] = typer.Option(
+        None,
+        "--cases",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Optional JSON file with benchmark cases.",
+    ),
+    no_run: bool = typer.Option(False, "--no-run", help="Skip model calls and only compare prompts."),
+    local: bool = typer.Option(False, "--local", help="Force local routing when a model run is requested."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON instead of a table."),
+):
+    """Compare a naive prompt against the optimized Memory Router prompt."""
+    cfg = load_config() if is_initialized() else Config()
+    if not is_initialized():
+        console.print("[yellow]No config found; using default benchmark settings.[/yellow]")
+
+    try:
+        suite = load_cases(cases)
+        report = run_suite(suite, cfg=cfg, run_model=not no_run, force_local=local)
+    except Exception as e:
+        console.print(Panel(f"[red]Benchmark failed:[/red] {e}", title="Benchmark error", border_style="red"))
+        raise typer.Exit(code=2)
+
+    if json_output:
+        console.print(json.dumps(report.to_dict(), indent=2, sort_keys=False))
+        return
+
+    _render_benchmark_report(report)
 
 
 # ---------- memory subcommands ----------
@@ -519,9 +674,30 @@ def memory_clear(
 # Names that should be dispatched to subcommands as-is. Anything else that
 # looks like a free-form query gets the implicit `ask` shorthand.
 _KNOWN_COMMANDS = {
-    "ask", "init", "auth", "config", "memory", "build-context", "doctor",
+    "ask", "init", "auth", "config", "memory", "build-context", "doctor", "benchmark",
     "--help", "-h", "--version",
 }
+
+
+def _rewrite_argv(argv: list[str]) -> list[str]:
+    """Insert the implicit `ask` command when the first real token is a query."""
+    first_pos_idx = next((i for i, a in enumerate(argv) if not a.startswith("-")), None)
+    if first_pos_idx is not None and argv[first_pos_idx] not in _KNOWN_COMMANDS:
+        return ["ask", *argv]
+    return argv
+
+
+def _render_flat_prompt(messages: list[dict]) -> str:
+    """Render the assembled chat as a single copy/paste-friendly prompt."""
+    parts = []
+    for m in messages:
+        role = m.get("role", "message")
+        content = m.get("content", "")
+        if role == "system":
+            parts.append(content)
+        else:
+            parts.append(f"{role.title()}: {content}")
+    return "\n\n---\n\n".join(parts)
 
 
 def entry() -> None:
@@ -533,11 +709,7 @@ def entry() -> None:
     subcommand) so real subcommands like `init` keep working.
     """
     import sys
-    argv = sys.argv[1:]
-    # Find the first non-flag token.
-    first_pos_idx = next((i for i, a in enumerate(argv) if not a.startswith("-")), None)
-    if first_pos_idx is not None and argv[first_pos_idx] not in _KNOWN_COMMANDS:
-        sys.argv.insert(1 + first_pos_idx, "ask")
+    sys.argv = [sys.argv[0], *_rewrite_argv(sys.argv[1:])]
     app()
 
 

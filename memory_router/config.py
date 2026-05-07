@@ -7,6 +7,7 @@ Everything is stored under ~/.memory-router/ — nothing leaves the machine.
 from __future__ import annotations
 
 import os
+import stat
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -33,9 +34,9 @@ DEFAULT_MODELS = {
     "anthropic_small": "claude-haiku-4-5-20251001",
     "anthropic_mid": "claude-sonnet-4-6",
     "anthropic_large": "claude-opus-4-7",
-    "gemini_small": "gemini-1.5-flash",
-    "gemini_mid": "gemini-1.5-pro",
-    "gemini_large": "gemini-1.5-pro",
+    "gemini_small": "gemini-2.5-flash",
+    "gemini_mid": "gemini-2.5-pro",
+    "gemini_large": "gemini-2.5-pro",
 }
 
 
@@ -44,13 +45,18 @@ class Config:
     """User-facing config, persisted to ~/.memory-router/config.yaml."""
 
     mode: str = "local"  # local | api | hybrid | ruflo
-    default_provider: str = "ollama"  # openai | anthropic | ollama | ruflo
+    default_provider: str = "ollama"  # openai | anthropic | ollama | ruflo | gemini
     ollama_host: str = "http://localhost:11434"
     memory_enabled: bool = True
+    auto_capture_memories: bool = True
     max_recent_messages: int = 6
     max_relevant_memories: int = 4
     token_budget: int = 4000
     models: Dict[str, str] = field(default_factory=lambda: dict(DEFAULT_MODELS))
+    # Pin a specific provider+model and skip auto-routing entirely.
+    # Either is empty string for "auto-pick". Override per-call with --provider/--model.
+    force_provider: str = ""   # e.g. "gemini" | "openai" | "anthropic" | "ollama"
+    force_model: str = ""      # e.g. "gemini-2.5-flash" | "gpt-4o-mini"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -62,6 +68,11 @@ class Config:
         for key in defaults.__dataclass_fields__:
             if key in data:
                 setattr(defaults, key, data[key])
+        # Backfill any model tier keys that weren't in the saved file (e.g.
+        # the user's config predates Gemini support). User overrides win.
+        merged_models = dict(DEFAULT_MODELS)
+        merged_models.update(defaults.models or {})
+        defaults.models = merged_models
         return defaults
 
 
@@ -72,12 +83,25 @@ def ensure_dirs() -> None:
     ROOT_DIR.mkdir(parents=True, exist_ok=True)
     VECTOR_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    for path in (ROOT_DIR, VECTOR_DIR, LOG_DIR):
+        try:
+            os.chmod(path, stat.S_IRWXU)
+        except Exception:
+            pass
+
+
+def _lock_file(path: Path) -> None:
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except Exception:
+        pass
 
 
 def load_config() -> Config:
     """Load config from disk, returning defaults if no file exists yet."""
     if not CONFIG_PATH.exists():
         return Config()
+    _lock_file(CONFIG_PATH)
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return Config.from_dict(data)
@@ -88,6 +112,7 @@ def save_config(cfg: Config) -> None:
     ensure_dirs()
     with CONFIG_PATH.open("w", encoding="utf-8") as f:
         yaml.safe_dump(cfg.to_dict(), f, sort_keys=False)
+    _lock_file(CONFIG_PATH)
 
 
 def is_initialized() -> bool:
