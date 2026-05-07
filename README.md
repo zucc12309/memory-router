@@ -314,6 +314,41 @@ To keep the scope honest:
 It is a **memory + prompt-optimization layer**. Use it alongside your existing
 tools — that's the point.
 
+## Working with code answers
+
+Memory Router prints answers to your terminal. **It does not create files, run shell commands, install dependencies, modify your repo, or run git.** If the model returns ten code blocks, you get ten code blocks of text — copy them into your editor yourself, or pipe them to a tool whose job is execution.
+
+This is intentional, not a missing feature. Two reasons:
+
+1. **Trust boundary.** Memory Router is meant to be a thin, auditable layer: context in, text out. The moment a tool can write files based on LLM output, you've handed the model write-access to your filesystem. We don't.
+2. **Better tools already exist** for code execution — Claude Code, Cursor, Aider, Copilot Workspace. They handle diff review, sandboxing, and undo properly. Memory Router would be a worse version of those if it tried.
+
+The mental model: **Memory Router is the prompt-prep layer. Your IDE / Claude Code / hands are the execution layer.**
+
+### Three workflows for code answers
+
+**1. Save the answer and copy code blocks manually** — fine for one-off scaffolding:
+
+```bash
+memory-router --model gemini-2.5-flash "Build a FastAPI URL shortener" > plan.md
+# Open plan.md in your editor, copy code blocks into real files
+```
+
+**2. Build the optimized prompt and hand it to a tool that executes** — the recommended workflow:
+
+```bash
+memory-router build-context "Add JWT auth to my URL shortener" | pbcopy
+# Paste into Claude Code (or Cursor's chat) — it can write files, run tests, etc.
+# You get Memory Router's context optimization PLUS your IDE's execution.
+```
+
+**3. Pair with `aider` or any CLI agent** — they're designed for repo edits; Memory Router can prepare the prompt:
+
+```bash
+memory-router build-context "Refactor the auth flow to use refresh tokens" > /tmp/prompt.txt
+aider --message-file /tmp/prompt.txt
+```
+
 ## Roadmap
 
 - [ ] Real vector embeddings (FAISS / sqlite-vec / Chroma)
