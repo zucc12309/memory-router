@@ -25,3 +25,31 @@ htmlcov/
 
 # Local app data — never commit user secrets/memory
 .memory-router/
+
+# Defensive — these must NEVER be committed
+.env*
+!.env.example
+*.sqlite
+*.sqlite3
+*.db
+secrets.json
+.secrets.json
+*.secret
+*.secret.*
+credentials.*
+.credentials*
+*.key
+*.pem
+*.p12
+*.pfx
+.netrc
+.npmrc
+*service-account*.json
+*api-key*
+*api_key*
+
+# OS / editor cruft
+Thumbs.db
+desktop.ini
+*.bak
+*.tmp
