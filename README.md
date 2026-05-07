@@ -189,18 +189,29 @@ Estimated tokens saved: 84%
 
 Memory Router can run as a [Model Context Protocol](https://modelcontextprotocol.io) server. Any MCP-compatible client can call its tools to retrieve memories, store new ones, build optimized contexts, and capture useful turns — without you copy-pasting anything.
 
-**One-time install**:
+**One-time install** — install globally so MCP clients can find it on PATH (clients spawn the server *outside* any venv you may have active):
 
 ```bash
-pip install "memory-router[mcp]"
+# pipx is the standard way to install Python CLIs globally
+brew install pipx                                     # macOS
+# or: python3 -m pip install --user pipx              # any platform
+pipx ensurepath                                       # adds ~/.local/bin to PATH
+
+# Install Memory Router with the MCP + provider extras
+pipx install memory-router
+pipx inject memory-router "memory-router[mcp,gemini,openai,anthropic]"
+
 memory-router init
+which memory-router      # confirm it's on PATH (e.g. ~/.local/bin/memory-router)
 ```
+
+> **Why pipx and not `pip install -e`?** MCP clients (Claude Code, Cursor, etc.) spawn the server as a fresh subprocess without your venv active. If `memory-router` only lives inside a venv, the client can't find it. `pipx` installs it system-wide while keeping its dependencies isolated.
 
 **Register with your client** (pick one or more):
 
 ```bash
-# Claude Code
-claude mcp add memory-router -- memory-router mcp serve
+# Claude Code — use --scope user so it's available in every project
+claude mcp add --scope user memory-router -- memory-router mcp serve
 
 # Cursor — add to ~/.cursor/mcp.json
 # { "mcpServers": { "memory-router": { "command": "memory-router", "args": ["mcp", "serve"] } } }
@@ -214,6 +225,10 @@ claude mcp add memory-router -- memory-router mcp serve
 #     command: memory-router
 #     args: ["mcp", "serve"]
 ```
+
+> **Restart your client** after registering. MCP servers are loaded at session start; an already-open Claude Code / Cursor / etc. won't pick up the new config until you restart.
+
+> **Working from a clone?** If you'd rather not install globally, register with the absolute path to your venv binary instead — e.g. `claude mcp add --scope user memory-router -- /Users/you/Documents/GitHub/memory-router/.venv/bin/memory-router mcp serve`. This works but breaks if you delete the venv.
 
 Now in any session of those tools, the agent can call:
 
@@ -231,6 +246,37 @@ Now in any session of those tools, the agent can call:
 | `stats_reset()` | Wipe stats |
 
 Every `build_context` call records its token impact into `stats.sqlite`, so you can run `memory-router stats` from your terminal at any time and see how much the layer is saving across all your sessions.
+
+#### Verify it's working
+
+After restarting your client, ask in chat:
+
+```
+List the memory-router MCP tools that are available.
+```
+
+The agent should ToolSearch and find the 10 tools above. Then a real test:
+
+```
+Remember that I always use python-jose for JWT, never pyjwt.
+```
+
+It should call `memory_store`. Confirm from your terminal:
+
+```bash
+memory-router memory list   # should show the new memory
+memory-router stats         # should start showing call counts
+```
+
+#### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `command not found: memory-router` when client starts | Memory Router isn't on system PATH. Use `pipx install memory-router` (above) or register with the absolute path to your venv binary. |
+| Tools don't appear in the client | Restart the client. MCP servers load at session start. |
+| Tools available in one project but not another | You used the default `local` scope. Re-register with `claude mcp add --scope user ...`. |
+| `mcp` package missing error on launch | Install the extra: `pipx inject memory-router "memory-router[mcp]"`. |
+| Need to start over | `claude mcp remove memory-router` and re-add. |
 
 #### Optional: auto-augment every Claude Code prompt
 
