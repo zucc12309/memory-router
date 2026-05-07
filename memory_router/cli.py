@@ -38,6 +38,7 @@ from .memory.palace import build_palace
 from .memory.sqlite_store import ConversationStore, Memory, MemoryStore, Message
 from .router import Router
 from .security.keychain import delete_secret, get_secret, set_secret
+from .stats import record_usage, summarize_stats, reset_stats
 from .utils.tokens import percent_saved, estimate_cost_usd, format_cost
 
 
@@ -250,6 +251,18 @@ def _ask(query: str, no_memory: bool, local: bool, session: str,
     token_table.add_row("Saved on input:", f"{real_saved}%")
     token_table.add_row("Cost (estimate):", format_cost(cost))
     console.print(Panel(token_table, title="Token usage", border_style="dim"))
+
+    # Persist into stats.sqlite so cumulative savings show in `memory-router stats`.
+    record_usage(
+        kind="cli_ask",
+        naive_tokens=naive_in,
+        sent_tokens=real_in,
+        output_tokens=real_out,
+        memories_used=len(built.used_memories),
+        provider=decision.provider.name,
+        model=result.model,
+        cost_usd=cost,
+    )
 
     # Promote useful turns into long-term memory when the config allows it.
     try:
@@ -596,6 +609,102 @@ def benchmark(
     _render_benchmark_report(report)
 
 
+# ---------- mcp server ----------
+
+mcp_app = typer.Typer(help="Run Memory Router as an MCP server for Claude Code, Cursor, etc.")
+app.add_typer(mcp_app, name="mcp")
+
+
+@mcp_app.command("serve")
+def mcp_serve():
+    """Start the MCP server on stdio. Used by `claude mcp add memory-router -- memory-router mcp serve`."""
+    _require_init()
+    try:
+        from .mcp_server import main as mcp_main
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    mcp_main()
+
+
+# ---------- stats ----------
+
+@app.command()
+def stats(
+    json_output: bool = typer.Option(False, "--json", help="Print raw JSON."),
+    reset: bool = typer.Option(False, "--reset", help="Wipe all stats and exit."),
+):
+    """Show cumulative token-saving stats across all CLI + MCP usage."""
+    _require_init()
+
+    if reset:
+        if not Confirm.ask("Reset ALL stats? This cannot be undone.", default=False):
+            console.print("Cancelled.")
+            return
+        n = reset_stats()
+        console.print(f"[green]Reset {n} usage events.[/green]")
+        return
+
+    s = summarize_stats()
+    if json_output:
+        import json as _json
+        console.print(_json.dumps(s.to_dict(), indent=2))
+        return
+
+    if s.calls == 0:
+        console.print("[yellow]No usage recorded yet.[/yellow] "
+                      "Run a query first: memory-router \"hi\"")
+        return
+
+    headline = Table.grid(padding=(0, 2))
+    headline.add_column(style="cyan", justify="right")
+    headline.add_column()
+    headline.add_row("Calls tracked:", f"{s.calls:,}")
+    headline.add_row("Tokens that would have been sent:", f"{s.naive_tokens:,}")
+    headline.add_row("Tokens actually sent:", f"{s.sent_tokens:,}")
+    headline.add_row(
+        "Tokens saved:",
+        f"[bold green]{s.tokens_saved:,}[/bold green]  ({s.saved_pct}%)",
+    )
+    headline.add_row("Output tokens received:", f"{s.output_tokens:,}")
+    headline.add_row("Memories injected:", f"{s.memories_used:,}")
+    headline.add_row("Estimated cost (real):", format_cost(s.cost_usd))
+    console.print(Panel(headline, title="Memory Router — Cumulative Savings",
+                        border_style="green"))
+
+    if s.by_provider:
+        prov_table = Table(title="By provider", show_header=True, show_lines=False)
+        prov_table.add_column("Provider", style="cyan")
+        prov_table.add_column("Calls", justify="right")
+        prov_table.add_column("Naive", justify="right")
+        prov_table.add_column("Sent", justify="right")
+        prov_table.add_column("Cost", justify="right")
+        for prov, p in sorted(s.by_provider.items()):
+            prov_table.add_row(
+                prov,
+                f"{p['calls']:,}",
+                f"{p['naive_tokens']:,}",
+                f"{p['sent_tokens']:,}",
+                format_cost(p['cost_usd']),
+            )
+        console.print(prov_table)
+
+    if s.by_kind:
+        kind_table = Table(title="By kind", show_header=True, show_lines=False)
+        kind_table.add_column("Kind", style="cyan")
+        kind_table.add_column("Calls", justify="right")
+        kind_table.add_column("Naive", justify="right")
+        kind_table.add_column("Sent", justify="right")
+        for kind, k in sorted(s.by_kind.items()):
+            kind_table.add_row(
+                kind,
+                f"{k['calls']:,}",
+                f"{k['naive_tokens']:,}",
+                f"{k['sent_tokens']:,}",
+            )
+        console.print(kind_table)
+
+
 # ---------- memory subcommands ----------
 
 @memory_app.command("list")
@@ -675,6 +784,7 @@ def memory_clear(
 # looks like a free-form query gets the implicit `ask` shorthand.
 _KNOWN_COMMANDS = {
     "ask", "init", "auth", "config", "memory", "build-context", "doctor", "benchmark",
+    "mcp", "stats",
     "--help", "-h", "--version",
 }
 

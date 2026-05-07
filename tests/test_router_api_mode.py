@@ -21,5 +21,5 @@ def test_api_mode_fails_closed_without_remote_provider():
     router = Router(Config(mode="api"))
     router.providers = {name: _UnavailableProvider() for name in router.providers}
 
-    with pytest.raises(RuntimeError, match="API mode requires"):
+    with pytest.raises(RuntimeError, match="API mode is set but no API provider is ready"):
         router.route(classify("Explain bond convexity"))

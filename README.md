@@ -113,7 +113,7 @@ memory-router auth gemini
 
 ---
 
-## Two ways to use it
+## Three ways to use it
 
 ### 1. `build-context` mode — no LLM call
 
@@ -185,6 +185,71 @@ Estimated tokens saved: 84%
 ╰────────────────────────────────────────────────────╯
 ```
 
+### 3. MCP server — plug into Claude Code, Cursor, Cline, Continue
+
+Memory Router can run as a [Model Context Protocol](https://modelcontextprotocol.io) server. Any MCP-compatible client can call its tools to retrieve memories, store new ones, build optimized contexts, and capture useful turns — without you copy-pasting anything.
+
+**One-time install**:
+
+```bash
+pip install "memory-router[mcp]"
+memory-router init
+```
+
+**Register with your client** (pick one or more):
+
+```bash
+# Claude Code
+claude mcp add memory-router -- memory-router mcp serve
+
+# Cursor — add to ~/.cursor/mcp.json
+# { "mcpServers": { "memory-router": { "command": "memory-router", "args": ["mcp", "serve"] } } }
+
+# Cline (VS Code) — Settings → MCP Servers, add:
+# Name: memory-router | Command: memory-router | Args: mcp serve
+
+# Continue — add to ~/.continue/config.yaml
+# mcpServers:
+#   - name: memory-router
+#     command: memory-router
+#     args: ["mcp", "serve"]
+```
+
+Now in any session of those tools, the agent can call:
+
+| Tool | What it does |
+|---|---|
+| `memory_search(query, top_k=5)` | Retrieve top-K relevant memories for a query |
+| `memory_store(content, domain, importance, ...)` | Save a durable fact |
+| `memory_list(limit=20)` | List memories ordered by importance + recency |
+| `memory_palace()` | Show domain → task hierarchy |
+| `memory_delete(memory_id)` | Delete by id |
+| `memory_capture(query, answer, ...)` | Promote a useful turn to long-term memory |
+| `build_context(query)` | Build the optimized prompt + report saved tokens |
+| `log_turn(query, answer)` | Record a Q&A into the conversation log |
+| `stats_summary()` | Cumulative token-saving stats |
+| `stats_reset()` | Wipe stats |
+
+Every `build_context` call records its token impact into `stats.sqlite`, so you can run `memory-router stats` from your terminal at any time and see how much the layer is saving across all your sessions.
+
+#### Optional: auto-augment every Claude Code prompt
+
+If you want every prompt you type in Claude Code to silently get memory context (without the agent having to call `memory_search` first), add this to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "command": "memory-router build-context --stdin --json"
+      }
+    ]
+  }
+}
+```
+
+The hook is opt-in. Without it, the agent decides when to call `memory_search` based on your prompt; with it, every prompt gets pre-augmented automatically.
+
 ---
 
 
@@ -200,6 +265,41 @@ Memory Router builds the context as:
 - the current query
 
 And then a token-budget pass trims anything over your limit. The savings shown in the output compares this trimmed context against what a "send-everything" approach would have used.
+
+## Tracking your savings
+
+Every CLI provider call and every MCP `build_context` invocation appends a row into `~/.memory-router/stats.sqlite` — token counts, memories used, provider, model, and estimated cost. No prompt content, no answer text, just the numbers.
+
+See it any time:
+
+```bash
+memory-router stats
+```
+
+Sample output:
+
+```
+╭─ Memory Router — Cumulative Savings ─────────────────────╮
+│              Calls tracked:  47                          │
+│ Tokens that would have been sent:  324,810               │
+│              Tokens actually sent:   38,420              │
+│                       Tokens saved:  286,390  (88%)      │
+│             Output tokens received:   67,210             │
+│                  Memories injected:  131                 │
+│              Estimated cost (real):  $0.124              │
+╰──────────────────────────────────────────────────────────╯
+
+By provider
+  gemini       42 calls   …
+  openai        4 calls   …
+  ollama        1 calls   …
+
+By kind
+  cli_ask              35 calls   …
+  mcp_build_context    12 calls   …
+```
+
+`memory-router stats --reset` wipes the table. `--json` prints raw JSON for piping into other tools.
 
 ## Proof: real measured savings
 
