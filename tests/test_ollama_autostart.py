@@ -54,7 +54,7 @@ def test_cli_local_mode_triggers_ollama_autostart(monkeypatch):
     monkeypatch.setattr("memory_router.cli.ensure_ollama_running", lambda host: start_calls.append(host) or True)
     monkeypatch.setattr(
         "memory_router.cli.ensure_ollama_model_available",
-        lambda host, model: model_calls.append((host, model)) or False,
+        lambda host, model, progress_callback=None: model_calls.append((host, model)) or False,
     )
 
     _ensure_local_ollama_ready(cfg, decision, force_local=False)
@@ -77,7 +77,7 @@ def test_cli_local_mode_pulls_model_when_ollama_is_already_running(monkeypatch):
 
     monkeypatch.setattr(
         "memory_router.cli.ensure_ollama_model_available",
-        lambda host, model: model_calls.append((host, model)) or True,
+        lambda host, model, progress_callback=None: model_calls.append((host, model)) or True,
     )
 
     _ensure_local_ollama_ready(cfg, decision, force_local=False)
@@ -102,12 +102,20 @@ def test_ensure_ollama_model_available_pulls_missing_model(monkeypatch):
 
         return Response()
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, stream):
         pulls.append((url, json["name"]))
+        assert stream is True
 
         class Response:
             def raise_for_status(self):
                 pass
+
+            def iter_lines(self):
+                return [
+                    b'{"status":"pulling manifest"}',
+                    b'{"status":"pulling layer","completed":10,"total":20}',
+                    b'{"status":"success"}',
+                ]
 
         return Response()
 

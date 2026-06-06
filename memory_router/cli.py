@@ -19,6 +19,7 @@ from typing import Optional
 import typer
 from rich import box
 from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeRemainingColumn
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 from rich.panel import Panel
@@ -305,9 +306,53 @@ def _ensure_local_ollama_ready(cfg: Config, decision, force_local: bool) -> None
         console.print("[green]Ollama is ready.[/green]")
 
     console.print(f"[yellow]Checking local model {decision.model}...[/yellow]")
-    pulled = ensure_ollama_model_available(cfg.ollama_host, decision.model)
+    pulled = _ensure_ollama_model_with_progress(cfg.ollama_host, decision.model)
     if pulled:
         console.print(f"[green]Downloaded {decision.model}. The model is ready.[/green]")
+
+
+def _ensure_ollama_model_with_progress(host: str, model: str) -> bool:
+    """Pull an Ollama model with visible progress when it is missing."""
+    task_id = None
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        def on_progress(event: dict) -> None:
+            nonlocal task_id
+            status = str(event.get("status") or "Downloading").capitalize()
+            total = event.get("total")
+            completed = event.get("completed")
+            if total:
+                if task_id is None:
+                    task_id = progress.add_task(
+                        f"{status} {model}",
+                        total=int(total),
+                    )
+                progress.update(
+                    task_id,
+                    total=int(total),
+                    completed=int(completed or 0),
+                    description=f"{status} {model}",
+                )
+            elif task_id is None:
+                task_id = progress.add_task(f"{status} {model}", total=None)
+            else:
+                progress.update(task_id, description=f"{status} {model}")
+
+        pulled = ensure_ollama_model_available(
+            host,
+            model,
+            progress_callback=on_progress,
+        )
+
+    return pulled
 
 
 def _apply_decay_if_enabled(mem_store: MemoryStore, cfg: Config) -> None:

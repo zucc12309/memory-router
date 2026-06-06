@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import time
+from typing import Callable, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -137,6 +139,7 @@ def pull_ollama_model(
     host: str = "http://localhost:11434",
     model: str = "",
     timeout: int = 1800,
+    progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> None:
     """Pull an Ollama model through the local Ollama API."""
     model = (model or "").strip()
@@ -144,22 +147,35 @@ def pull_ollama_model(
         raise RuntimeError("No Ollama model id was provided.")
     response = requests.post(
         f"{_base_url(host)}/api/pull",
-        json={"name": model, "stream": False},
+        json={"name": model, "stream": True},
         timeout=timeout,
+        stream=True,
     )
     response.raise_for_status()
+    for line in response.iter_lines():
+        if not line:
+            continue
+        try:
+            event = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if event.get("error"):
+            raise RuntimeError(str(event["error"]))
+        if progress_callback:
+            progress_callback(event)
 
 
 def ensure_ollama_model_available(
     host: str = "http://localhost:11434",
     model: str = "",
     timeout: int = 1800,
+    progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> bool:
     """Ensure a model is available locally. Returns True if it was pulled."""
     if is_ollama_model_available(host, model):
         return False
 
-    pull_ollama_model(host, model, timeout=timeout)
+    pull_ollama_model(host, model, timeout=timeout, progress_callback=progress_callback)
     if not is_ollama_model_available(host, model):
         raise RuntimeError(f"Ollama finished pulling '{model}', but it is still not listed locally.")
     return True
