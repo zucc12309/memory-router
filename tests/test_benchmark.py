@@ -95,3 +95,50 @@ def test_benchmark_run_scores_quality_with_fake_provider(monkeypatch):
     assert record.baseline_score == 0.0
     assert record.optimized_score == 1.0
     assert record.raw_tokens > record.optimized_tokens
+
+
+def test_benchmark_local_mode_auto_starts_ollama(monkeypatch):
+    case = _make_case()
+    provider = None
+    started = []
+
+    class FakeProvider:
+        name = "ollama"
+
+        def __init__(self):
+            self.available = False
+
+        def is_available(self) -> bool:
+            return self.available
+
+        def complete(self, model: str, messages, **kwargs):
+            return ProviderResult(
+                text="Use pytest and keep the tests isolated.",
+                model=model,
+                input_tokens=estimate_messages_tokens(messages),
+                output_tokens=estimate_tokens("Use pytest and keep the tests isolated."),
+            )
+
+    class FakeRouter:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        def route(self, classification, force_local=False):
+            nonlocal provider
+            provider = FakeProvider()
+            return SimpleNamespace(provider=provider, model="llama3.1:8b", reason="local route")
+
+    def fake_ensure_ollama_running(host: str, timeout: int = 15):
+        started.append(host)
+        assert provider is not None
+        provider.available = True
+        return True
+
+    monkeypatch.setattr(benchmark, "Router", FakeRouter)
+    monkeypatch.setattr(benchmark, "ensure_ollama_running", fake_ensure_ollama_running)
+
+    record = benchmark.evaluate_case(case, cfg=Config(mode="local", token_budget=400), run_model=True, force_local=True)
+
+    assert started == ["http://localhost:11434"]
+    assert record.status == "ok"
+    assert record.provider == "ollama"

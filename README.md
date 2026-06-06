@@ -67,7 +67,7 @@ These are different products and Memory Router uses the API path:
 | Memory Router | ❌ Cannot use a subscription | ✅ Uses your API key |
 | Billing | Flat monthly fee | Pay-per-use (tokens in + tokens out) |
 
-You'll need API keys from [platform.openai.com](https://platform.openai.com), [console.anthropic.com](https://console.anthropic.com), or [aistudio.google.com](https://aistudio.google.com/app/apikey) (Gemini) to use those providers. For local-only mode you don't need any keys — just [Ollama](https://ollama.com).
+You'll need API keys from [platform.openai.com](https://platform.openai.com), [console.anthropic.com](https://console.anthropic.com), or [aistudio.google.com](https://aistudio.google.com/app/apikey) (Gemini) to use those providers. For local-only mode you don't need any keys — just [Ollama](https://ollama.com). Memory Router will start Ollama in the background for you on the first local request if it is installed.
 
 ---
 
@@ -117,7 +117,7 @@ memory-router init
 
 You'll be asked to pick a mode:
 
-- **local** — only local models (Ollama). No API keys needed. Most private.
+- **local** — only local models (Ollama). No API keys needed. Most private. Ollama auto-starts in the background on first use.
 - **api** — OpenAI / Anthropic / Gemini only. Requires API keys.
 - **hybrid** — local for simple queries, API for complex ones. Recommended.
 - **ruflo** — adds Ruflo as a provider for multi-agent / agentic workflows.
@@ -158,7 +158,7 @@ task=explain  domain=finance  concepts=['bond','convexity']  tokens_sent≈410  
 memory-router "Explain bond convexity"                    # auto-route
 memory-router "Explain this" --stream                     # stream response
 memory-router --no-memory "Private question"              # skip memory
-memory-router --local "Stay on local model"               # force Ollama
+memory-router --local "Stay on local model"               # force Ollama (auto-starts if needed)
 memory-router --provider openai --model gpt-4o "Code it"  # pin provider
 ```
 
