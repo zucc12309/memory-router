@@ -76,8 +76,6 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 CREATE INDEX IF NOT EXISTS idx_memories_domain ON memories(domain);
 CREATE INDEX IF NOT EXISTS idx_memories_task ON memories(task);
-CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
-CREATE INDEX IF NOT EXISTS idx_memories_confidence ON memories(confidence);
 """
 
 _FTS_SCHEMA = """
@@ -142,6 +140,16 @@ def _migrate_memories(conn: sqlite3.Connection) -> None:
             except sqlite3.OperationalError:
                 pass  # Column already exists in some edge cases
 
+    # Create indexes on v2 columns (must run AFTER columns exist)
+    for idx_sql in [
+        "CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)",
+        "CREATE INDEX IF NOT EXISTS idx_memories_confidence ON memories(confidence)",
+    ]:
+        try:
+            conn.execute(idx_sql)
+        except sqlite3.OperationalError:
+            pass
+
     conn.commit()
 
 
@@ -153,12 +161,20 @@ def _setup_fts(conn: sqlite3.Connection) -> bool:
         conn.commit()
 
         # Populate FTS from existing data (idempotent rebuild)
-        conn.execute(
-            """INSERT OR IGNORE INTO memories_fts(rowid, content, concepts)
-               SELECT id, content, concepts FROM memories
-               WHERE id NOT IN (SELECT rowid FROM memories_fts)"""
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                """INSERT OR IGNORE INTO memories_fts(rowid, content, concepts)
+                   SELECT id, content, concepts FROM memories
+                   WHERE id NOT IN (SELECT rowid FROM memories_fts)"""
+            )
+            conn.commit()
+        except sqlite3.DatabaseError:
+            # FTS index corrupted — rebuild from scratch
+            try:
+                conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+                conn.commit()
+            except Exception:
+                pass  # Best effort — FTS search may be degraded
         return True
     except sqlite3.OperationalError:
         # FTS5 not compiled into this SQLite build — fall back gracefully
