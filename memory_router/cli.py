@@ -44,7 +44,7 @@ from .memory.sqlite_store import ConversationStore, Memory, MemoryStore, Message
 from .router import Router
 from .security.keychain import delete_secret, get_secret, set_secret
 from .stats import record_usage, summarize_stats, reset_stats
-from .utils.ollama import ensure_ollama_running
+from .utils.ollama import ensure_ollama_model_available, ensure_ollama_running
 from .utils.system import (
     OLLAMA_MODEL_OPTIONS,
     detect_system_specs,
@@ -293,17 +293,21 @@ def _get_mycelium(mem_store: MemoryStore, cfg: Config):
 
 
 def _ensure_local_ollama_ready(cfg: Config, decision, force_local: bool) -> None:
-    """Start Ollama in the background for explicit local-mode requests."""
+    """Start Ollama and pull the selected local model when needed."""
     if decision.provider.name != "ollama":
         return
     if not (force_local or cfg.mode == "local"):
         return
-    if decision.provider.is_available():
-        return
 
-    console.print("[yellow]Ollama is not running. Starting it in the background...[/yellow]")
-    ensure_ollama_running(cfg.ollama_host)
-    console.print("[green]Ollama is ready.[/green]")
+    if not decision.provider.is_available():
+        console.print("[yellow]Ollama is not running. Starting it in the background...[/yellow]")
+        ensure_ollama_running(cfg.ollama_host)
+        console.print("[green]Ollama is ready.[/green]")
+
+    console.print(f"[yellow]Checking local model {decision.model}...[/yellow]")
+    pulled = ensure_ollama_model_available(cfg.ollama_host, decision.model)
+    if pulled:
+        console.print(f"[green]Downloaded {decision.model}. The model is ready.[/green]")
 
 
 def _apply_decay_if_enabled(mem_store: MemoryStore, cfg: Config) -> None:
@@ -472,7 +476,7 @@ def _ask(query: str, no_memory: bool, local: bool, session: str,
         _ensure_local_ollama_ready(cfg, decision, local)
     except Exception as e:
         console.print(Panel(
-            f"[red]Could not start Ollama automatically:[/red] {e}\n\n"
+            f"[red]Could not prepare local Ollama:[/red] {e}\n\n"
             "Install Ollama or check `memory-router doctor` for details.",
             title="Local model unavailable",
             border_style="red",

@@ -8,6 +8,8 @@ import subprocess
 import time
 from urllib.parse import urlparse
 
+import requests
+
 from ..providers.ollama_provider import OllamaProvider
 
 
@@ -22,6 +24,15 @@ def _normalize_host(host: str) -> str:
         raw = f"http://{raw}"
     parsed = urlparse(raw)
     return parsed.netloc or parsed.path
+
+
+def _base_url(host: str) -> str:
+    raw = (host or "").strip()
+    if not raw:
+        raw = "http://localhost:11434"
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    return raw.rstrip("/")
 
 
 def _is_local_host(host: str) -> bool:
@@ -93,3 +104,62 @@ def ensure_ollama_running(host: str = "http://localhost:11434", timeout: int = 1
         f"Ollama did not become ready on {host!r} within {timeout} seconds. "
         "Try running `ollama serve` manually."
     )
+
+
+def list_ollama_models(host: str = "http://localhost:11434") -> list[str]:
+    """Return locally available Ollama model names."""
+    response = requests.get(f"{_base_url(host)}/api/tags", timeout=5)
+    response.raise_for_status()
+    payload = response.json()
+    models = payload.get("models", []) if isinstance(payload, dict) else []
+    names = []
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("model")
+        if name:
+            names.append(str(name))
+    return names
+
+
+def is_ollama_model_available(
+    host: str = "http://localhost:11434",
+    model: str = "",
+) -> bool:
+    """Check whether an Ollama model is already pulled locally."""
+    model = (model or "").strip()
+    if not model:
+        return False
+    return model in set(list_ollama_models(host))
+
+
+def pull_ollama_model(
+    host: str = "http://localhost:11434",
+    model: str = "",
+    timeout: int = 1800,
+) -> None:
+    """Pull an Ollama model through the local Ollama API."""
+    model = (model or "").strip()
+    if not model:
+        raise RuntimeError("No Ollama model id was provided.")
+    response = requests.post(
+        f"{_base_url(host)}/api/pull",
+        json={"name": model, "stream": False},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+
+
+def ensure_ollama_model_available(
+    host: str = "http://localhost:11434",
+    model: str = "",
+    timeout: int = 1800,
+) -> bool:
+    """Ensure a model is available locally. Returns True if it was pulled."""
+    if is_ollama_model_available(host, model):
+        return False
+
+    pull_ollama_model(host, model, timeout=timeout)
+    if not is_ollama_model_available(host, model):
+        raise RuntimeError(f"Ollama finished pulling '{model}', but it is still not listed locally.")
+    return True

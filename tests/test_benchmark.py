@@ -101,6 +101,7 @@ def test_benchmark_local_mode_auto_starts_ollama(monkeypatch):
     case = _make_case()
     provider = None
     started = []
+    model_checks = []
 
     class FakeProvider:
         name = "ollama"
@@ -136,9 +137,15 @@ def test_benchmark_local_mode_auto_starts_ollama(monkeypatch):
 
     monkeypatch.setattr(benchmark, "Router", FakeRouter)
     monkeypatch.setattr(benchmark, "ensure_ollama_running", fake_ensure_ollama_running)
+    monkeypatch.setattr(
+        benchmark,
+        "ensure_ollama_model_available",
+        lambda host, model: model_checks.append((host, model)) or False,
+    )
 
     record = benchmark.evaluate_case(case, cfg=Config(mode="local", token_budget=400), run_model=True, force_local=True)
 
     assert started == ["http://localhost:11434"]
+    assert model_checks == [("http://localhost:11434", "llama3.1:8b")]
     assert record.status == "ok"
     assert record.provider == "ollama"
