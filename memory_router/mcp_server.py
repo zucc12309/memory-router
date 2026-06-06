@@ -30,6 +30,7 @@ from .config import Config, ensure_dirs, load_config
 from .context_builder import build_context as _build_context
 from .memory.auto_capture import capture_turn
 from .memory.palace import build_palace
+from .memory.retrieval import retrieve_relevant_memories
 from .memory.sqlite_store import (
     ConversationStore,
     Memory,
@@ -100,8 +101,8 @@ def _sanitize_session_id(session_id: str) -> str:
     return session_id
 
 
-def _sanitize_text(text: str, max_len: int = 10_000) -> str:
-    """Truncate user-supplied text to prevent memory abuse."""
+def _sanitize_text(text: str, max_len: int = 100_000) -> str:
+    """Truncate user-supplied text to a generous safety cap."""
     return text[:max_len].strip()
 
 
@@ -159,33 +160,13 @@ def _create_server():
         query = _sanitize_text(query)
         cls = classify(query)
         store, _ = _get_stores()
-        mems = store.search(
-            task=cls.task,
-            domain=cls.domain,
-            concepts=cls.concepts,
-            query_text=query,
+        mems = retrieve_relevant_memories(
+            store=store,
+            classification=cls,
+            query=query,
             limit=top_k,
+            mycelium=_get_mycelium(),
         )
-
-        # Mycelium spread activation for associated memories
-        mycelium = _get_mycelium()
-        if mycelium and mems:
-            seed_ids = [m.id for m in mems if m.id is not None]
-            if seed_ids:
-                associated = mycelium.spread_activation(seed_ids, top_k=3)
-                existing_ids = {m.id for m in mems}
-                for mid, score in associated:
-                    if mid not in existing_ids:
-                        extra = store.get(mid)
-                        if extra:
-                            mems.append(extra)
-                mycelium.strengthen_co_retrieved(
-                    [m.id for m in mems if m.id is not None]
-                )
-
-        for m in mems:
-            if m.id is not None:
-                store.touch(m.id)
 
         return {
             "classification": cls.to_dict(),

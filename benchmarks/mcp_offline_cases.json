@@ -1,0 +1,189 @@
+{
+  "cases": [
+    {
+      "name": "mcp coding prompt",
+      "description": "Offline MCP context test for a realistic coding workflow.",
+      "session_id": "mcp-test",
+      "query": "Refactor the parser helper and keep the pytest suite concise without breaking CLI compatibility.",
+      "history": [
+        {
+          "role": "user",
+          "content": "We need to keep this repo offline-testable."
+        },
+        {
+          "role": "assistant",
+          "content": "Yes, no API keys or network calls in the test path."
+        },
+        {
+          "role": "user",
+          "content": "The CLI should stay stable while we add memory capture."
+        },
+        {
+          "role": "assistant",
+          "content": "Agreed, preserve the public commands."
+        },
+        {
+          "role": "user",
+          "content": "Prefer clear error messages and small diffs."
+        },
+        {
+          "role": "assistant",
+          "content": "Small focused changes are easier to review."
+        },
+        {
+          "role": "user",
+          "content": "We also want the benchmark to be offline."
+        },
+        {
+          "role": "assistant",
+          "content": "The benchmark should use local or no-run mode."
+        },
+        {
+          "role": "user",
+          "content": "Use pytest for validation."
+        },
+        {
+          "role": "assistant",
+          "content": "pytest works well for this repo."
+        }
+      ],
+      "memories": [
+        {
+          "task": "code",
+          "domain": "software",
+          "concepts": [
+            "pytest",
+            "tests"
+          ],
+          "content": "Prefer pytest for backend and MCP tests.",
+          "importance": 0.95
+        },
+        {
+          "task": "code",
+          "domain": "software",
+          "concepts": [
+            "offline",
+            "api keys"
+          ],
+          "content": "Auth flows must stay offline-testable without API keys.",
+          "importance": 0.9
+        },
+        {
+          "task": "code",
+          "domain": "software",
+          "concepts": [
+            "typescript",
+            "cli",
+            "python",
+            "core"
+          ],
+          "content": "The repo has a TypeScript CLI front-end and a Python core engine.",
+          "importance": 0.9
+        }
+      ],
+      "must_include": [
+        "pytest"
+      ],
+      "must_avoid": [
+        "unittest"
+      ]
+    },
+    {
+      "name": "medium coding prompt",
+      "description": "Medium offline coding prompt with enough history to show token savings.",
+      "session_id": "medium-prompt",
+      "query": "Refactor the parser helper so it is easier to test, keep the pytest suite concise, preserve CLI compatibility, and make sure the MCP path stays offline-testable. Please give a concrete implementation plan, likely failure modes, and the tests you would add first.",
+      "history": [
+        {
+          "role": "user",
+          "content": "We need to keep the repo offline-testable."
+        },
+        {
+          "role": "assistant",
+          "content": "Right, no API keys or network calls in the test path."
+        },
+        {
+          "role": "user",
+          "content": "The CLI should stay stable while we add memory capture."
+        },
+        {
+          "role": "assistant",
+          "content": "Agreed, preserve the public commands."
+        },
+        {
+          "role": "user",
+          "content": "Prefer clear error messages and small diffs."
+        },
+        {
+          "role": "assistant",
+          "content": "Small focused changes are easier to review."
+        },
+        {
+          "role": "user",
+          "content": "We also want the benchmark to be offline."
+        },
+        {
+          "role": "assistant",
+          "content": "The benchmark should use local or no-run mode."
+        },
+        {
+          "role": "user",
+          "content": "Use pytest for validation."
+        },
+        {
+          "role": "assistant",
+          "content": "pytest works well for this repo."
+        },
+        {
+          "role": "user",
+          "content": "Prompt injection text should never become a durable memory."
+        },
+        {
+          "role": "assistant",
+          "content": "Filter it before capture and keep memory notes untrusted."
+        }
+      ],
+      "memories": [
+        {
+          "task": "code",
+          "domain": "software",
+          "concepts": [
+            "pytest",
+            "tests"
+          ],
+          "content": "Prefer pytest for backend and MCP tests.",
+          "importance": 0.95
+        },
+        {
+          "task": "code",
+          "domain": "software",
+          "concepts": [
+            "offline",
+            "api keys"
+          ],
+          "content": "Auth flows must stay offline-testable without API keys.",
+          "importance": 0.9
+        },
+        {
+          "task": "code",
+          "domain": "software",
+          "concepts": [
+            "typescript",
+            "cli",
+            "python",
+            "core"
+          ],
+          "content": "The repo has a TypeScript CLI front-end and a Python core engine.",
+          "importance": 0.9
+        }
+      ],
+      "must_include": [
+        "pytest",
+        "offline"
+      ],
+      "must_avoid": [
+        "unittest"
+      ]
+    }
+  ]
+}

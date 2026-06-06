@@ -22,11 +22,10 @@ from __future__ import annotations
 
 import hashlib
 import os
-import stat
-from pathlib import Path
 from typing import Optional
 
 from ..config import ROOT_DIR, ensure_dirs
+from ..utils.fs import atomic_write_bytes
 
 
 _SALT_FILE = ROOT_DIR / ".encryption_salt"
@@ -57,11 +56,7 @@ def _derive_key() -> bytes:
         salt = _SALT_FILE.read_bytes()
     else:
         salt = os.urandom(32)
-        _SALT_FILE.write_bytes(salt)
-        try:
-            os.chmod(_SALT_FILE, stat.S_IRUSR | stat.S_IWUSR)
-        except Exception:
-            pass
+        atomic_write_bytes(_SALT_FILE, salt)
 
     machine_id = _get_machine_id()
     _KEY_CACHE = hashlib.pbkdf2_hmac(

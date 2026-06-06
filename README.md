@@ -88,7 +88,7 @@ pip install "memory-router[all]"          # everything
 From source:
 
 ```bash
-git clone https://github.com/zucc12309/memory-router
+git clone https://github.com/zucc12309/memory-router.git
 cd memory-router
 pip install -e ".[dev]"
 ```

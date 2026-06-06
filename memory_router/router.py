@@ -12,7 +12,6 @@ v2 changes:
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -36,6 +35,7 @@ class RouteDecision:
     reason: str
     fallback_providers: Optional[List[str]] = None
     estimated_cost_usd: float = 0.0
+    allow_fallback: bool = True
 
 
 class Router:
@@ -50,6 +50,14 @@ class Router:
             "gemini": GeminiProvider(),
             "ruflo": RufloProvider(),
         }
+
+    def _ordered_provider_names(self, names: List[str]) -> List[str]:
+        """Prefer the configured default provider when it is in the candidate set."""
+        preferred = self.cfg.default_provider
+        ordered = [n for n in names if n != preferred]
+        if preferred in names:
+            return [preferred, *ordered]
+        return ordered
 
     def route(
         self,
@@ -116,44 +124,41 @@ class Router:
             if not model_id:
                 return None
             # Build fallback list (other available providers at same tier)
-            fallbacks = [
-                n
-                for n in ("anthropic", "openai", "gemini")
-                if n != prov_name and self.providers[n].is_available()
-            ]
+            fallbacks = self._ordered_provider_names([
+                n for n in ("anthropic", "openai", "gemini") if n != prov_name
+            ])
+            fallbacks = [n for n in fallbacks if self.providers[n].is_available()]
             return RouteDecision(
-                p, model_id, reason, fallback_providers=fallbacks or None
+                p,
+                model_id,
+                reason,
+                fallback_providers=fallbacks or None,
             )
 
         if task in ("code", "security") or c >= 0.7:
-            for prov_name, key in [
-                ("anthropic", "anthropic_large"),
-                ("openai", "openai_large"),
-                ("gemini", "gemini_large"),
-            ]:
-                d = _pick(
-                    prov_name, key, f"{task}/high complexity → {prov_name} large"
-                )
+            for prov_name in self._ordered_provider_names([
+                "anthropic", "openai", "gemini"
+            ]):
+                key = f"{prov_name}_large"
+                d = _pick(prov_name, key, f"{task}/high complexity → {prov_name} large")
                 if d:
                     return d
 
         if task in ("explain", "reasoning") or c >= 0.4:
-            for prov_name, key in [
-                ("anthropic", "anthropic_mid"),
-                ("openai", "openai_large"),
-                ("gemini", "gemini_mid"),
-            ]:
+            for prov_name in self._ordered_provider_names([
+                "anthropic", "openai", "gemini"
+            ]):
+                key = "openai_large" if prov_name == "openai" else f"{prov_name}_mid"
                 d = _pick(prov_name, key, f"{task} → {prov_name} mid")
                 if d:
                     return d
 
         # Cheap / simple — prefer the small models.
-        for prov_name, key in [
-            ("gemini", "gemini_small"),
-            ("anthropic", "anthropic_small"),
-            ("openai", "openai_small"),
-        ]:
-            d = _pick(prov_name, key, "simple query → small model")
+        for prov_name in self._ordered_provider_names([
+            "gemini", "anthropic", "openai"
+        ]):
+            model_key = f"{prov_name}_small"
+            d = _pick(prov_name, model_key, "simple query → small model")
             if d:
                 return d
 
@@ -185,7 +190,8 @@ class Router:
         """Execute completion with automatic fallback on failure.
 
         Tries the primary provider first. On failure, iterates through
-        fallback providers before giving up. Returns (result, actual_provider).
+        fallback providers before giving up. Returns
+        (result, actual_provider, actual_model).
         """
         # Try primary
         try:
@@ -193,8 +199,10 @@ class Router:
             _log.info("completion succeeded", extra={
                 "provider": decision.provider.name, "model": decision.model,
             })
-            return result, decision.provider.name
+            return result, decision.provider.name, decision.model
         except Exception as primary_err:
+            if not getattr(decision, "allow_fallback", True):
+                raise
             _log.warning("primary provider failed, attempting fallback", extra={
                 "provider": decision.provider.name, "model": decision.model,
                 "error": str(primary_err),
@@ -214,7 +222,7 @@ class Router:
                     continue
                 try:
                     result = fb_provider.complete(fb_model, messages, **kwargs)
-                    return result, fb_name
+                    return result, fb_name, fb_model
                 except Exception as fb_err:
                     last_err = fb_err
                     continue
@@ -226,10 +234,14 @@ class Router:
         models = self.cfg.models
         # Determine the original tier
         orig_lower = original_model.lower()
-        if any(s in orig_lower for s in ("large", "opus", "4o", "pro")):
+        if any(s in orig_lower for s in ("mini", "flash", "haiku", "small", "nano", "tiny")):
+            tier = "small"
+        elif any(s in orig_lower for s in ("large", "opus")):
             tier = "large"
-        elif any(s in orig_lower for s in ("mid", "sonnet")):
+        elif any(s in orig_lower for s in ("mid", "sonnet", "pro")):
             tier = "mid"
+        elif any(s in orig_lower for s in ("4o", "o3", "o4")):
+            tier = "large"
         else:
             tier = "small"
 
@@ -290,18 +302,12 @@ class Router:
                 "Pass --model or set force_model."
             )
 
-        # Build fallback list for pinned routes too
-        fallbacks = [
-            n
-            for n in ("anthropic", "openai", "gemini")
-            if n != provider_name and self.providers[n].is_available()
-        ]
-
         return RouteDecision(
             provider,
             model_id,
             f"pinned → {provider_name}/{model_id}",
-            fallback_providers=fallbacks or None,
+            fallback_providers=None,
+            allow_fallback=False,
         )
 
 

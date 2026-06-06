@@ -14,6 +14,8 @@ from typing import Any, Dict, Optional
 
 import yaml
 
+from .utils.fs import atomic_write_text
+
 # ---------- paths ----------
 
 ROOT_DIR = Path(os.path.expanduser("~/.memory-router"))
@@ -117,9 +119,10 @@ def load_config() -> Config:
 def save_config(cfg: Config) -> None:
     """Persist config to ~/.memory-router/config.yaml."""
     ensure_dirs()
-    with CONFIG_PATH.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg.to_dict(), f, sort_keys=False)
-    _lock_file(CONFIG_PATH)
+    atomic_write_text(
+        CONFIG_PATH,
+        yaml.safe_dump(cfg.to_dict(), sort_keys=False),
+    )
 
 
 def is_initialized() -> bool:

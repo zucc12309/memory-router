@@ -33,6 +33,36 @@ def test_search_with_domain_filter(tmp_path):
     assert all(m.domain == "software" for m in results)
 
 
+def test_search_ranks_stack_memory_for_project_stack_question(tmp_path):
+    store = _make_store(tmp_path)
+    store.add(Memory(content="Prefer pytest for testing", domain="software", task="code",
+                     concepts=["pytest", "tests"], importance=0.95))
+    store.add(Memory(content="This project uses TypeScript and pnpm", domain="software", task="code",
+                     concepts=["typescript", "pnpm"], importance=0.9))
+    store.add(Memory(content="User likes concise answers", domain="prefs", task="general",
+                     concepts=["concise", "answers"], importance=0.99))
+
+    results = store.search(query_text="Which stack does the project use?", limit=3)
+    assert len(results) >= 2
+    assert results[0].content.startswith("This project uses TypeScript")
+    assert all(m.domain == "software" for m in results[:2])
+
+
+def test_search_ranks_testing_memory_for_test_framework_question(tmp_path):
+    store = _make_store(tmp_path)
+    store.add(Memory(content="Prefer pytest for testing", domain="software", task="code",
+                     concepts=["pytest", "tests"], importance=0.95))
+    store.add(Memory(content="This project uses TypeScript and pnpm", domain="software", task="code",
+                     concepts=["typescript", "pnpm"], importance=0.9))
+    store.add(Memory(content="User likes concise answers", domain="prefs", task="general",
+                     concepts=["concise", "answers"], importance=0.99))
+
+    results = store.search(query_text="What test framework should I use in this repo?", limit=3)
+    assert len(results) >= 2
+    assert results[0].content.startswith("Prefer pytest")
+    assert all(m.domain == "software" for m in results[:2])
+
+
 def test_search_by_type(tmp_path):
     store = _make_store(tmp_path)
     store.add(Memory(content="Fact A", memory_type="semantic"))

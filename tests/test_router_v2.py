@@ -38,9 +38,10 @@ def test_fallback_on_failure():
     )
     router.providers["gemini"] = fallback
 
-    result, used_provider = router.complete_with_fallback(decision, [{"role": "user", "content": "hi"}])
+    result, used_provider, used_model = router.complete_with_fallback(decision, [{"role": "user", "content": "hi"}])
     assert result.text == "ok"
     assert used_provider == "gemini"
+    assert used_model == "gemini-2.5-pro"
 
 
 def test_no_fallback_raises():
@@ -48,7 +49,6 @@ def test_no_fallback_raises():
     router = Router(cfg)
 
     primary = _StubProvider("anthropic", available=True, fail_on_complete=True)
-    decision = router.__class__.__mro__  # Just need RouteDecision
     from memory_router.router import RouteDecision
     decision = RouteDecision(
         provider=primary,
@@ -71,6 +71,12 @@ def test_guess_provider_new_models():
     assert _guess_provider_from_model("unknown-model") is None
 
 
+def test_pick_fallback_model_respects_mini_tier():
+    cfg = Config(mode="api")
+    router = Router(cfg)
+    assert router._pick_fallback_model("anthropic", "gpt-4o-mini") == cfg.models["anthropic_small"]
+
+
 def test_route_decision_has_fallbacks():
     cfg = Config(mode="hybrid")
     router = Router(cfg)
@@ -82,3 +88,40 @@ def test_route_decision_has_fallbacks():
     decision = router.route(classification)
     # Since only gemini is available, no fallbacks
     assert decision.provider.name == "gemini"
+
+
+def test_default_provider_is_preferred_for_simple_queries():
+    cfg = Config(mode="api", default_provider="openai")
+    router = Router(cfg)
+
+    for name in router.providers:
+        router.providers[name] = _StubProvider(name, available=True)
+
+    classification = classify("What is a parser?")
+    decision = router.route(classification)
+
+    assert decision.provider.name == "openai"
+
+
+def test_pinned_routes_do_not_fallback():
+    cfg = Config(mode="api")
+    router = Router(cfg)
+
+    primary = _StubProvider("anthropic", available=True, fail_on_complete=True)
+    fallback = _StubProvider("gemini", available=True, fail_on_complete=False)
+    router.providers["gemini"] = fallback
+
+    from memory_router.router import RouteDecision
+
+    decision = RouteDecision(
+        provider=primary,
+        model="claude-sonnet-4-6",
+        reason="pinned test",
+        fallback_providers=["gemini"],
+        allow_fallback=False,
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        router.complete_with_fallback(decision, [{"role": "user", "content": "hi"}])
