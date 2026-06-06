@@ -45,6 +45,11 @@ from .router import Router
 from .security.keychain import delete_secret, get_secret, set_secret
 from .stats import record_usage, summarize_stats, reset_stats
 from .utils.ollama import ensure_ollama_running
+from .utils.system import (
+    OLLAMA_MODEL_OPTIONS,
+    detect_system_specs,
+    recommend_ollama_model,
+)
 from .utils.tokens import percent_saved, estimate_cost_usd, format_cost
 
 
@@ -198,7 +203,7 @@ def _mode_guide_panel() -> Panel:
     table = Table.grid(padding=(0, 1), expand=True)
     table.add_column(style="bold cyan", no_wrap=True)
     table.add_column(style="white")
-    table.add_row("local", "Ollama only. Best for fully offline use and private workflows. Starts in the background on first use.")
+    table.add_row("local", "Ollama only. Best for fully offline use and private workflows. Starts in the background on first use and suggests a model from your specs.")
     table.add_row("api", "Cloud providers only. Best when you already have keys and want remote models.")
     table.add_row("hybrid", "Local first, cloud fallback when needed. Best overall balance.")
     table.add_row("ruflo", "Agentic routing path for advanced workflows.")
@@ -209,6 +214,52 @@ def _mode_guide_panel() -> Panel:
         box=box.ROUNDED,
         padding=(1, 2),
     )
+
+
+def _system_specs_panel(specs=None, recommendation=None) -> Panel:
+    """Show detected machine specs and the recommended local model."""
+    specs = specs or detect_system_specs()
+    recommendation = recommendation or recommend_ollama_model(specs)
+
+    table = Table.grid(padding=(0, 1), expand=True)
+    table.add_column(style="bold cyan", no_wrap=True)
+    table.add_column(style="white")
+    table.add_row("OS", specs.os_name)
+    table.add_row("CPU", f"{specs.cpu_count} cores")
+    table.add_row("Architecture", specs.architecture)
+    table.add_row("RAM", f"{specs.memory_gb:.1f} GB" if specs.memory_gb is not None else "unknown")
+    table.add_row("Recommended", f"{recommendation.model} ({recommendation.tier})")
+    table.add_row("Why", recommendation.reason)
+
+    return Panel(
+        table,
+        title="Local model recommendation",
+        border_style="green",
+        box=box.ROUNDED,
+        padding=(1, 2),
+    )
+
+
+def _local_model_options_table() -> Table:
+    """Render the Ollama model shortlist used during setup."""
+    table = Table(
+        title="Ollama model shortlist",
+        box=box.ROUNDED,
+        header_style="bold cyan",
+        row_styles=["none", "dim"],
+    )
+    table.add_column("Model", style="cyan", no_wrap=True)
+    table.add_column("Min RAM", justify="right", no_wrap=True)
+    table.add_column("Label", style="magenta", no_wrap=True)
+    table.add_column("Description", overflow="fold")
+    for option in OLLAMA_MODEL_OPTIONS:
+        table.add_row(
+            option.model,
+            f"{option.min_memory_gb:.0f} GB",
+            option.label,
+            option.description,
+        )
+    return table
 
 
 def _format_saved_pct(pct: int) -> str:
@@ -715,6 +766,15 @@ def init():
     if mode in ("local", "hybrid"):
         host = Prompt.ask("Ollama host", default=cfg.ollama_host)
         cfg.ollama_host = host
+        specs = detect_system_specs()
+        recommendation = recommend_ollama_model(specs)
+        console.print(_system_specs_panel(specs, recommendation))
+        console.print(_local_model_options_table())
+        default_local_model = cfg.local_model or recommendation.model
+        cfg.local_model = Prompt.ask(
+            "Choose Ollama model",
+            default=default_local_model,
+        )
 
     # v2 features
     cfg.mycelium_enabled = Confirm.ask("Enable mycelium memory network?", default=True)
@@ -730,6 +790,7 @@ def init():
     ]
     if mode in ("local", "hybrid"):
         summary_rows.append(("Ollama host", cfg.ollama_host))
+        summary_rows.append(("Local model", cfg.local_model or "auto"))
     console.print(_summary_panel("Setup complete", summary_rows, border_style="green"))
     console.print(f"[green]Wrote config to {CONFIG_PATH}.[/green]")
     if mode == "local":
@@ -828,6 +889,8 @@ def doctor():
         ("Decay", "on" if cfg.memory_decay_enabled else "off"),
         ("Adaptive routing", "on" if cfg.adaptive_routing else "off"),
     ]
+    if cfg.mode in ("local", "hybrid"):
+        overview_rows.append(("Local model", cfg.local_model or "auto"))
     console.print(_summary_panel("Overview", overview_rows, border_style="cyan"))
     console.print()
     from .health import check_health

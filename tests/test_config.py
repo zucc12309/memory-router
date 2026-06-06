@@ -8,6 +8,7 @@ from memory_router.config import Config, save_config, load_config, set_value, DE
 def test_config_defaults():
     cfg = Config()
     assert cfg.mode == "local"
+    assert cfg.local_model == ""
     assert cfg.token_budget == 4000
     assert cfg.mycelium_enabled is True
     assert cfg.memory_decay_enabled is True
@@ -22,12 +23,14 @@ def test_config_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr("memory_router.config.ROOT_DIR", tmp_path)
 
     cfg = Config(mode="hybrid", token_budget=8000, mycelium_enabled=False)
+    cfg.local_model = "llama3.1:8b"
     save_config(cfg)
 
     loaded = load_config()
     assert loaded.mode == "hybrid"
     assert loaded.token_budget == 8000
     assert loaded.mycelium_enabled is False
+    assert loaded.local_model == "llama3.1:8b"
 
 
 def test_config_from_dict_backfills_models():

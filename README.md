@@ -67,7 +67,7 @@ These are different products and Memory Router uses the API path:
 | Memory Router | ❌ Cannot use a subscription | ✅ Uses your API key |
 | Billing | Flat monthly fee | Pay-per-use (tokens in + tokens out) |
 
-You'll need API keys from [platform.openai.com](https://platform.openai.com), [console.anthropic.com](https://console.anthropic.com), or [aistudio.google.com](https://aistudio.google.com/app/apikey) (Gemini) to use those providers. For local-only mode you don't need any keys — just [Ollama](https://ollama.com). Memory Router will start Ollama in the background for you on the first local request if it is installed.
+You'll need API keys from [platform.openai.com](https://platform.openai.com), [console.anthropic.com](https://console.anthropic.com), or [aistudio.google.com](https://aistudio.google.com/app/apikey) (Gemini) to use those providers. For local-only mode you don't need any keys — just [Ollama](https://ollama.com). Memory Router will start Ollama in the background for you on the first local request if it is installed, and during setup it will suggest a local model based on your machine's RAM and CPU.
 
 ---
 
@@ -117,7 +117,7 @@ memory-router init
 
 You'll be asked to pick a mode:
 
-- **local** — only local models (Ollama). No API keys needed. Most private. Ollama auto-starts in the background on first use.
+- **local** — only local models (Ollama). No API keys needed. Most private. Ollama auto-starts in the background on first use, and setup suggests a model from your system specs.
 - **api** — OpenAI / Anthropic / Gemini only. Requires API keys.
 - **hybrid** — local for simple queries, API for complex ones. Recommended.
 - **ruflo** — adds Ruflo as a provider for multi-agent / agentic workflows.
@@ -206,6 +206,7 @@ memory-router config set mode hybrid
 memory-router config set token_budget 8000
 memory-router config set mycelium_enabled true
 memory-router config set encryption_enabled true
+memory-router config set local_model llama3.1:8b   # choose the default Ollama model
 ```
 
 ### 6. Diagnostics

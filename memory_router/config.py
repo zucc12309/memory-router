@@ -49,6 +49,7 @@ class Config:
     mode: str = "local"  # local | api | hybrid | ruflo
     default_provider: str = "ollama"  # openai | anthropic | ollama | ruflo | gemini
     ollama_host: str = "http://localhost:11434"
+    local_model: str = ""  # preferred Ollama model for local mode
     memory_enabled: bool = True
     auto_capture_memories: bool = True
     max_recent_messages: int = 6

@@ -254,7 +254,8 @@ class Router:
         models = self.cfg.models
         ollama = self.providers["ollama"]
         key = "local_simple" if classification.complexity < 0.3 else "local_default"
-        return RouteDecision(ollama, models.get(key, "llama3.1:8b"), reason)
+        model_id = self.cfg.local_model or models.get(key, "llama3.1:8b")
+        return RouteDecision(ollama, model_id, reason)
 
     def _route_pinned(
         self,

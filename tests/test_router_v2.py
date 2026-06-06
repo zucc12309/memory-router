@@ -103,6 +103,17 @@ def test_default_provider_is_preferred_for_simple_queries():
     assert decision.provider.name == "openai"
 
 
+def test_local_model_preference_is_used_for_local_mode():
+    cfg = Config(mode="local", local_model="qwen2.5:14b")
+    router = Router(cfg)
+
+    classification = classify("Explain APIs")
+    decision = router.route(classification)
+
+    assert decision.provider.name == "ollama"
+    assert decision.model == "qwen2.5:14b"
+
+
 def test_pinned_routes_do_not_fallback():
     cfg = Config(mode="api")
     router = Router(cfg)
