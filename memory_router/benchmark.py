@@ -24,6 +24,7 @@ from .config import Config
 from .context_builder import build_context
 from .memory.sqlite_store import ConversationStore, Memory, MemoryStore, Message
 from .router import Router
+from .utils.ollama import ensure_ollama_running
 from .token_optimizer import fit_to_budget
 from .utils.tokens import estimate_messages_tokens, percent_saved
 
@@ -250,6 +251,17 @@ def evaluate_case(
             record.status = "skipped"
             record.note = str(e)
             return record
+
+        if (force_local or cfg.mode == "local") and decision.provider.name == "ollama" and not decision.provider.is_available():
+            try:
+                ensure_ollama_running(cfg.ollama_host)
+            except Exception as e:
+                record.status = "error"
+                record.note = str(e)
+                record.provider = decision.provider.name
+                record.model = decision.model
+                record.reason = decision.reason
+                return record
 
         if not decision.provider.is_available():
             record.status = "skipped"

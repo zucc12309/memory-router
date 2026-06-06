@@ -44,6 +44,7 @@ from .memory.sqlite_store import ConversationStore, Memory, MemoryStore, Message
 from .router import Router
 from .security.keychain import delete_secret, get_secret, set_secret
 from .stats import record_usage, summarize_stats, reset_stats
+from .utils.ollama import ensure_ollama_running
 from .utils.tokens import percent_saved, estimate_cost_usd, format_cost
 
 
@@ -197,7 +198,7 @@ def _mode_guide_panel() -> Panel:
     table = Table.grid(padding=(0, 1), expand=True)
     table.add_column(style="bold cyan", no_wrap=True)
     table.add_column(style="white")
-    table.add_row("local", "Ollama only. Best for fully offline use and private workflows.")
+    table.add_row("local", "Ollama only. Best for fully offline use and private workflows. Starts in the background on first use.")
     table.add_row("api", "Cloud providers only. Best when you already have keys and want remote models.")
     table.add_row("hybrid", "Local first, cloud fallback when needed. Best overall balance.")
     table.add_row("ruflo", "Agentic routing path for advanced workflows.")
@@ -237,6 +238,20 @@ def _get_mycelium(mem_store: MemoryStore, cfg: Config):
         from .memory.mycelium import MyceliumNetwork
         return MyceliumNetwork(mem_store.conn)
     return None
+
+
+def _ensure_local_ollama_ready(cfg: Config, decision, force_local: bool) -> None:
+    """Start Ollama in the background for explicit local-mode requests."""
+    if decision.provider.name != "ollama":
+        return
+    if not (force_local or cfg.mode == "local"):
+        return
+    if decision.provider.is_available():
+        return
+
+    console.print("[yellow]Ollama is not running. Starting it in the background...[/yellow]")
+    ensure_ollama_running(cfg.ollama_host)
+    console.print("[green]Ollama is ready.[/green]")
 
 
 def _apply_decay_if_enabled(mem_store: MemoryStore, cfg: Config) -> None:
@@ -390,6 +405,17 @@ def _ask(query: str, no_memory: bool, local: bool, session: str,
             f"[red]Router failed:[/red] {e}\n\n"
             "Check `memory-router config show` and re-run `memory-router init` if needed.",
             title="Routing error",
+            border_style="red",
+        ))
+        raise typer.Exit(code=2)
+
+    try:
+        _ensure_local_ollama_ready(cfg, decision, local)
+    except Exception as e:
+        console.print(Panel(
+            f"[red]Could not start Ollama automatically:[/red] {e}\n\n"
+            "Install Ollama or check `memory-router doctor` for details.",
+            title="Local model unavailable",
             border_style="red",
         ))
         raise typer.Exit(code=2)
@@ -706,6 +732,10 @@ def init():
         summary_rows.append(("Ollama host", cfg.ollama_host))
     console.print(_summary_panel("Setup complete", summary_rows, border_style="green"))
     console.print(f"[green]Wrote config to {CONFIG_PATH}.[/green]")
+    if mode == "local":
+        console.print(
+            "[dim]Local mode will auto-start Ollama in the background the first time you use `memory-router ask`.[/dim]"
+        )
     console.print("Next: [bold]memory-router \"Explain bond convexity\"[/bold]")
 
 
