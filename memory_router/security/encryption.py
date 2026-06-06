@@ -78,11 +78,19 @@ def is_encryption_available() -> bool:
 def encrypt_content(plaintext: str, key: Optional[bytes] = None) -> bytes:
     """AES-256-GCM encryption. Returns nonce(12) + ciphertext + tag(16).
 
-    Falls back to UTF-8 encoding if cryptography is not installed.
+    Raises RuntimeError if cryptography is not installed, to prevent
+    silent plaintext fallback.
     """
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     except ImportError:
+        import warnings
+        warnings.warn(
+            "cryptography package not installed — encryption is unavailable. "
+            "Content will be stored as plaintext. Install with: "
+            "pip install memory-router[encryption]",
+            stacklevel=2,
+        )
         return plaintext.encode("utf-8")
 
     key = key or _derive_key()

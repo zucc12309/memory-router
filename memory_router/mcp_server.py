@@ -213,6 +213,9 @@ def _create_server():
         """
         _check_rate_limit()
         content = _sanitize_text(content)
+        from .memory.sqlite_store import _VALID_MEMORY_TYPES
+        if memory_type not in _VALID_MEMORY_TYPES:
+            return {"ok": False, "error": f"Invalid memory_type '{memory_type}'. Valid: {', '.join(sorted(_VALID_MEMORY_TYPES))}"}
         store, _ = _get_stores()
         memory_id = store.add(
             Memory(

@@ -49,12 +49,19 @@ def export_memories(
     ]
 
 
-def export_to_file(store: MemoryStore, path: Path, encrypt: bool = False) -> int:
+def export_to_file(store: MemoryStore, path: Path, encrypt: Optional[bool] = None) -> int:
     """Export memories to a JSON file. Returns count exported.
 
+    When encrypt is None (default), encryption is used if encryption_enabled
+    is set in config and the cryptography package is available.
     When encrypt=True, the file is AES-256-GCM encrypted using the machine key.
     The encrypted file has a .enc extension hint and cannot be read on other machines.
     """
+    if encrypt is None:
+        from ..config import load_config
+        from ..security.encryption import is_encryption_available
+        cfg = load_config()
+        encrypt = cfg.encryption_enabled and is_encryption_available()
     data = export_memories(store)
     payload = json.dumps(
         {"format": "memory-router", "version": 2, "memories": data},

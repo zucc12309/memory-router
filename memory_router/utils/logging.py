@@ -58,8 +58,14 @@ def get_logger(name: str, log_dir: Optional[Path] = None) -> logging.Logger:
 
     from ..config import LOG_DIR
 
+    import stat
+
     log_dir = log_dir or LOG_DIR
     log_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(log_dir, stat.S_IRWXU)
+    except Exception:
+        pass
 
     level_str = os.environ.get("MEMORY_ROUTER_LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_str, logging.INFO)

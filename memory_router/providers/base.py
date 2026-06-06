@@ -37,6 +37,18 @@ class BaseProvider(ABC):
 
     name: str = "base"
 
+    @staticmethod
+    def split_system_messages(messages: List[dict]):
+        """Split system messages from chat messages.
+
+        Returns (system_text, chat_messages) where system_text is the
+        concatenated system prompts and chat_messages excludes them.
+        """
+        system_parts = [m["content"] for m in messages if m.get("role") == "system"]
+        chat = [m for m in messages if m.get("role") != "system"]
+        system_text = "\n\n".join(system_parts) if system_parts else ""
+        return system_text, chat
+
     @abstractmethod
     def is_available(self) -> bool:
         """Return True if the provider can serve a request right now."""

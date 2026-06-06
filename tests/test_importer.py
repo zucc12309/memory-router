@@ -162,7 +162,7 @@ def test_export_memories_fields(tmp_path):
         concepts=["testing", "export"],
         importance=0.7,
         memory_type="procedural",
-        source="unit_test",
+        source="user",
     ))
 
     exported = export_memories(store)

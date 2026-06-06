@@ -50,8 +50,8 @@ class GeminiProvider(BaseProvider):
 
     def _prepare_messages(self, messages: List[dict]):
         """Split system/chat and convert to Gemini format."""
-        system_parts = [m["content"] for m in messages if m.get("role") == "system"]
-        chat = [m for m in messages if m.get("role") != "system"]
+        system_text, chat = self.split_system_messages(messages)
+        system_parts = [system_text] if system_text else []
 
         history = []
         for m in chat[:-1]:
@@ -109,8 +109,12 @@ class GeminiProvider(BaseProvider):
                 if text:
                     full_text.append(text)
                     yield StreamChunk(text=text, finished=False)
-        except Exception:
-            # If streaming isn't supported, fall back to non-streaming
+        except (RuntimeError, ValueError):
+            raise
+        except Exception as stream_err:
+            err_msg = str(stream_err).lower()
+            if "auth" in err_msg or "api key" in err_msg or "permission" in err_msg:
+                raise
             result = self.complete(model, messages, **kwargs)
             yield StreamChunk(
                 text=result.text,

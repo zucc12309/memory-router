@@ -46,16 +46,9 @@ class AnthropicProvider(BaseProvider):
         except ImportError:
             return False
 
-    def _split_messages(self, messages: List[dict]):
-        """Split system messages from chat messages for Anthropic API."""
-        system_parts = [m["content"] for m in messages if m.get("role") == "system"]
-        chat = [m for m in messages if m.get("role") != "system"]
-        system_text = "\n\n".join(system_parts) if system_parts else ""
-        return system_text, chat
-
     def complete(self, model: str, messages: List[dict], **kwargs) -> ProviderResult:
         client = self._ensure_client()
-        system_text, chat = self._split_messages(messages)
+        system_text, chat = self.split_system_messages(messages)
         resp = client.messages.create(
             model=model,
             max_tokens=kwargs.get("max_tokens", 1024),
@@ -73,7 +66,7 @@ class AnthropicProvider(BaseProvider):
     ) -> Generator[StreamChunk, None, None]:
         """Stream response tokens from Anthropic."""
         client = self._ensure_client()
-        system_text, chat = self._split_messages(messages)
+        system_text, chat = self.split_system_messages(messages)
         full_text = []
 
         with client.messages.stream(

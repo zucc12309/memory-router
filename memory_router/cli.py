@@ -361,8 +361,9 @@ def _apply_decay_if_enabled(mem_store: MemoryStore, cfg: Config) -> None:
         try:
             from .memory.decay import apply_decay
             apply_decay(mem_store)
-        except Exception:
-            pass
+        except Exception as e:
+            from .utils.logging import get_logger
+            get_logger(__name__).warning("memory decay failed", extra={"error": str(e)})
 
 
 def _explain_provider_error(provider_name: str, model: str, err: Exception) -> None:
@@ -490,8 +491,9 @@ def _ask(query: str, no_memory: bool, local: bool, session: str,
             mycelium=mycelium,
         )
     except Exception as e:
+        safe_msg = str(e).replace(str(Path.home()), "~")
         console.print(Panel(
-            f"[red]Failed to build context:[/red] {e}\n\n"
+            f"[red]Failed to build context:[/red] {safe_msg}\n\n"
             "This usually means a corrupted SQLite file under ~/.memory-router/.\n"
             "Try: [bold]memory-router memory clear --yes[/bold] or remove the directory and re-init.",
             title="Context build error",
@@ -704,8 +706,9 @@ def _record_adaptive_outcome(
                 quality_signal=quality,
                 error=error,
             ))
-    except Exception:
-        pass
+    except Exception as e:
+        from .utils.logging import get_logger
+        get_logger(__name__).warning("adaptive routing outcome recording failed", extra={"error": str(e)})
 
 
 # ---------- build-context (no LLM call) ----------
@@ -739,8 +742,9 @@ def build_context_cmd(
             mycelium=mycelium,
         )
     except Exception as e:
+        safe_msg = str(e).replace(str(Path.home()), "~")
         console.print(Panel(
-            f"[red]Failed to build context:[/red] {e}\n\n"
+            f"[red]Failed to build context:[/red] {safe_msg}\n\n"
             "This usually means a corrupted SQLite file under ~/.memory-router/.\n"
             "Try: [bold]memory-router memory clear --yes[/bold] or remove the directory and re-init.",
             title="Context build error",

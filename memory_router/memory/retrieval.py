@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import List, Optional
 
 from ..classifier import Classification
-from .mycelium import MyceliumNetwork
 from .sqlite_store import Memory, MemoryStore
 
 
@@ -18,7 +17,7 @@ def retrieve_relevant_memories(
     classification: Classification,
     query: str,
     limit: int,
-    mycelium: Optional[MyceliumNetwork] = None,
+    mycelium=None,
     touch: bool = True,
     strengthen: bool = True,
 ) -> List[Memory]:

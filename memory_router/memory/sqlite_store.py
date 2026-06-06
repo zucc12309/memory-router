@@ -30,6 +30,23 @@ from typing import List, Optional
 from ..config import CONVERSATIONS_DB, MEMORIES_DB, ensure_dirs
 from ..utils.fs import ensure_secure_file
 
+_log = None
+
+
+def _get_log():
+    global _log
+    if _log is None:
+        from ..utils.logging import get_logger
+        _log = get_logger(__name__)
+    return _log
+
+
+def _sanitize_fts_term(term: str) -> str:
+    """Escape FTS5 special characters by wrapping in double quotes."""
+    if not term or not term.isalpha() or len(term) <= 2:
+        return ""
+    return f'"{term}"'
+
 
 # ---------- data classes ----------
 
@@ -187,6 +204,10 @@ def _setup_fts(conn: sqlite3.Connection) -> bool:
 # ---------- memory store ----------
 
 
+_VALID_MEMORY_TYPES = {"semantic", "episodic", "procedural", "working"}
+_VALID_SOURCES = {"user", "auto_capture", "agent", "import"}
+
+
 class MemoryStore:
     """CRUD + hybrid keyword/FTS retrieval for Memory Palace entries."""
 
@@ -195,7 +216,28 @@ class MemoryStore:
         _migrate_memories(self.conn)
         self._fts_available = _setup_fts(self.conn)
 
+    def close(self) -> None:
+        """Close the underlying SQLite connection."""
+        if self.conn:
+            self.conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     def add(self, mem: Memory) -> int:
+        if mem.memory_type not in _VALID_MEMORY_TYPES:
+            raise ValueError(
+                f"Invalid memory_type '{mem.memory_type}'. "
+                f"Valid: {', '.join(sorted(_VALID_MEMORY_TYPES))}"
+            )
+        if mem.source not in _VALID_SOURCES:
+            raise ValueError(
+                f"Invalid source '{mem.source}'. "
+                f"Valid: {', '.join(sorted(_VALID_SOURCES))}"
+            )
         cur = self.conn.execute(
             """INSERT INTO memories
                (task, domain, concepts, content, importance, confidence,
@@ -236,9 +278,8 @@ class MemoryStore:
         if not words:
             return []
         # Use FTS5 to narrow candidates before scoring
-        search_terms = " OR ".join(
-            w for w in list(words)[:10] if w.isalpha() and len(w) > 2
-        )
+        quoted = [_sanitize_fts_term(w) for w in list(words)[:10]]
+        search_terms = " OR ".join(t for t in quoted if t)
         if not search_terms:
             return []
         try:
@@ -246,7 +287,8 @@ class MemoryStore:
                 "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ? LIMIT 50",
                 (search_terms,),
             ).fetchall()
-        except Exception:
+        except sqlite3.OperationalError:
+            _get_log().warning("FTS5 query failed in find_similar", extra={"detail": search_terms})
             rows = []
         if not rows:
             return []
@@ -320,9 +362,8 @@ class MemoryStore:
 
         if self._fts_available and search_terms.strip():
             try:
-                fts_query = " OR ".join(
-                    w for w in search_terms.lower().split() if len(w) > 2
-                )
+                quoted = [_sanitize_fts_term(w) for w in search_terms.lower().split()]
+                fts_query = " OR ".join(t for t in quoted if t)
                 if fts_query:
                     fts_rows = self.conn.execute(
                         "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ? LIMIT ?",
@@ -330,7 +371,7 @@ class MemoryStore:
                     ).fetchall()
                     fts_ids = {r[0] for r in fts_rows}
             except sqlite3.OperationalError:
-                pass  # FTS query syntax error — fall through
+                _get_log().warning("FTS5 query failed in search", extra={"detail": search_terms})
 
         # Phase 2: Score candidates
         if fts_ids:
@@ -556,6 +597,17 @@ class ConversationStore:
 
     def __init__(self, path: Path = CONVERSATIONS_DB):
         self.conn = _connect(path, _CONVERSATIONS_SCHEMA)
+
+    def close(self) -> None:
+        """Close the underlying SQLite connection."""
+        if self.conn:
+            self.conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def add(self, msg: Message) -> int:
         cur = self.conn.execute(
