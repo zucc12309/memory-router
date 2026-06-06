@@ -6,6 +6,13 @@ Two databases live under ~/.memory-router/:
 
 Both use stdlib sqlite3, so no extra dependencies. A single connection per
 process is fine for a CLI; we open lazily and let SQLite handle locking.
+
+v2 changes:
+  - FTS5 full-text search for memory retrieval (replaces O(n) full-table scan)
+  - memory_type column (semantic|episodic|procedural|working)
+  - confidence column with decay support
+  - source tracking (user|auto_capture|agent|import)
+  - Cached session token count
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from ..config import CONVERSATIONS_DB, MEMORIES_DB, ensure_dirs
 
 # ---------- data classes ----------
 
+
 @dataclass
 class Memory:
     id: Optional[int] = None
@@ -32,6 +40,9 @@ class Memory:
     concepts: List[str] = field(default_factory=list)
     content: str = ""
     importance: float = 0.5
+    confidence: float = 1.0
+    memory_type: str = "semantic"  # semantic|episodic|procedural|working
+    source: str = "user"  # user|auto_capture|agent|import
     created_at: float = field(default_factory=time.time)
     last_used: float = 0.0
     usage_count: int = 0
@@ -56,12 +67,37 @@ CREATE TABLE IF NOT EXISTS memories (
     concepts TEXT NOT NULL,         -- JSON array
     content TEXT NOT NULL,
     importance REAL NOT NULL DEFAULT 0.5,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    memory_type TEXT NOT NULL DEFAULT 'semantic',
+    source TEXT NOT NULL DEFAULT 'user',
     created_at REAL NOT NULL,
     last_used REAL NOT NULL DEFAULT 0,
     usage_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_memories_domain ON memories(domain);
 CREATE INDEX IF NOT EXISTS idx_memories_task ON memories(task);
+CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
+CREATE INDEX IF NOT EXISTS idx_memories_confidence ON memories(confidence);
+"""
+
+_FTS_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    content, concepts,
+    content=memories, content_rowid=id
+);
+"""
+
+_FTS_TRIGGERS = """
+CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+    INSERT INTO memories_fts(rowid, content, concepts) VALUES (new.id, new.content, new.concepts);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content, concepts) VALUES ('delete', old.id, old.content, old.concepts);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content, concepts) VALUES ('delete', old.id, old.content, old.concepts);
+    INSERT INTO memories_fts(rowid, content, concepts) VALUES (new.id, new.content, new.concepts);
+END;
 """
 
 _CONVERSATIONS_SCHEMA = """
@@ -89,25 +125,72 @@ def _connect(path: Path, schema: str) -> sqlite3.Connection:
     return conn
 
 
+def _migrate_memories(conn: sqlite3.Connection) -> None:
+    """Add new columns to existing databases without losing data."""
+    cursor = conn.execute("PRAGMA table_info(memories)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    migrations = [
+        ("confidence", "ALTER TABLE memories ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0"),
+        ("memory_type", "ALTER TABLE memories ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'semantic'"),
+        ("source", "ALTER TABLE memories ADD COLUMN source TEXT NOT NULL DEFAULT 'user'"),
+    ]
+    for col_name, sql in migrations:
+        if col_name not in existing_cols:
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # Column already exists in some edge cases
+
+    conn.commit()
+
+
+def _setup_fts(conn: sqlite3.Connection) -> bool:
+    """Set up FTS5 if available. Returns True if FTS is active."""
+    try:
+        conn.executescript(_FTS_SCHEMA)
+        conn.executescript(_FTS_TRIGGERS)
+        conn.commit()
+
+        # Populate FTS from existing data (idempotent rebuild)
+        conn.execute(
+            """INSERT OR IGNORE INTO memories_fts(rowid, content, concepts)
+               SELECT id, content, concepts FROM memories
+               WHERE id NOT IN (SELECT rowid FROM memories_fts)"""
+        )
+        conn.commit()
+        return True
+    except sqlite3.OperationalError:
+        # FTS5 not compiled into this SQLite build — fall back gracefully
+        return False
+
+
 # ---------- memory store ----------
 
+
 class MemoryStore:
-    """CRUD + simple keyword retrieval for Memory Palace entries."""
+    """CRUD + hybrid keyword/FTS retrieval for Memory Palace entries."""
 
     def __init__(self, path: Path = MEMORIES_DB):
         self.conn = _connect(path, _MEMORIES_SCHEMA)
+        _migrate_memories(self.conn)
+        self._fts_available = _setup_fts(self.conn)
 
     def add(self, mem: Memory) -> int:
         cur = self.conn.execute(
             """INSERT INTO memories
-               (task, domain, concepts, content, importance, created_at, last_used, usage_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (task, domain, concepts, content, importance, confidence,
+                memory_type, source, created_at, last_used, usage_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 mem.task,
                 mem.domain,
                 json.dumps(mem.concepts),
                 mem.content,
                 mem.importance,
+                mem.confidence,
+                mem.memory_type,
+                mem.source,
                 mem.created_at,
                 mem.last_used,
                 mem.usage_count,
@@ -123,6 +206,53 @@ class MemoryStore:
             (content,),
         ).fetchone()
         return row is not None
+
+    def find_similar(self, content: str, threshold: float = 0.7, limit: int = 5) -> List["Memory"]:
+        """Find memories similar to the given content using trigram overlap.
+
+        Returns memories whose word-level Jaccard similarity exceeds threshold.
+        This is a lightweight semantic dedup check — no embeddings needed.
+        """
+        words = set(content.lower().split())
+        if not words:
+            return []
+        # Use FTS5 to narrow candidates before scoring
+        search_terms = " OR ".join(
+            w for w in list(words)[:10] if w.isalpha() and len(w) > 2
+        )
+        if not search_terms:
+            return []
+        try:
+            rows = self.conn.execute(
+                "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ? LIMIT 50",
+                (search_terms,),
+            ).fetchall()
+        except Exception:
+            rows = []
+        if not rows:
+            return []
+
+        ids = [r[0] for r in rows]
+        placeholders = ",".join("?" * len(ids))
+        candidates = self.conn.execute(
+            f"SELECT * FROM memories WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+
+        results = []
+        for row in candidates:
+            mem = _row_to_memory(row)
+            mem_words = set(mem.content.lower().split())
+            if not mem_words:
+                continue
+            intersection = words & mem_words
+            union = words | mem_words
+            jaccard = len(intersection) / len(union) if union else 0
+            if jaccard >= threshold:
+                results.append(mem)
+                if len(results) >= limit:
+                    break
+        return results
 
     def delete(self, memory_id: int) -> bool:
         cur = self.conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
@@ -141,37 +271,121 @@ class MemoryStore:
         ).fetchall()
         return [_row_to_memory(r) for r in rows]
 
+    def get(self, memory_id: int) -> Optional[Memory]:
+        """Retrieve a single memory by id."""
+        row = self.conn.execute(
+            "SELECT * FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        return _row_to_memory(row) if row else None
+
     def search(
         self,
         task: Optional[str] = None,
         domain: Optional[str] = None,
         concepts: Optional[List[str]] = None,
+        query_text: Optional[str] = None,
+        memory_type: Optional[str] = None,
+        min_confidence: float = 0.0,
         limit: int = 5,
     ) -> List[Memory]:
-        """Score by keyword overlap + importance + recency. Good enough for MVP.
+        """Hybrid search: FTS5 full-text + keyword scoring + importance + recency.
 
-        A vector store can be plugged in later (see vector_store.py) — this
-        function just returns the top-N memories most likely to be relevant.
+        Uses FTS5 when available for fast text matching. Falls back to the
+        original keyword overlap scoring when FTS5 is not compiled in.
         """
-        rows = self.conn.execute("SELECT * FROM memories").fetchall()
+        # Phase 1: FTS pre-filter if available and we have query text
+        fts_ids = set()
+        search_terms = " ".join(concepts or [])
+        if query_text:
+            search_terms = f"{query_text} {search_terms}"
+
+        if self._fts_available and search_terms.strip():
+            try:
+                fts_query = " OR ".join(
+                    w for w in search_terms.lower().split() if len(w) > 2
+                )
+                if fts_query:
+                    fts_rows = self.conn.execute(
+                        "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ? LIMIT ?",
+                        (fts_query, limit * 3),
+                    ).fetchall()
+                    fts_ids = {r[0] for r in fts_rows}
+            except sqlite3.OperationalError:
+                pass  # FTS query syntax error — fall through
+
+        # Phase 2: Score candidates
+        if fts_ids:
+            placeholders = ",".join("?" for _ in fts_ids)
+            rows = self.conn.execute(
+                f"SELECT * FROM memories WHERE id IN ({placeholders})",
+                list(fts_ids),
+            ).fetchall()
+        else:
+            # Fallback: load by domain/task filter or all
+            if domain and domain != "general":
+                rows = self.conn.execute(
+                    "SELECT * FROM memories WHERE domain = ?", (domain,)
+                ).fetchall()
+            elif task and task != "general":
+                rows = self.conn.execute(
+                    "SELECT * FROM memories WHERE task = ?", (task,)
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT * FROM memories ORDER BY importance DESC LIMIT ?",
+                    (limit * 5,),
+                ).fetchall()
+
         scored = []
-        concepts = [c.lower() for c in (concepts or [])]
+        concepts_lower = [c.lower() for c in (concepts or [])]
+
         for r in rows:
             mem = _row_to_memory(r)
-            score = mem.importance
+
+            # Filter by type and confidence
+            if memory_type and mem.memory_type != memory_type:
+                continue
+            if mem.confidence < min_confidence:
+                continue
+
+            score = mem.importance * mem.confidence
             if task and mem.task == task:
                 score += 0.5
             if domain and mem.domain == domain:
                 score += 0.5
             mem_concepts = [c.lower() for c in mem.concepts]
-            overlap = len(set(mem_concepts) & set(concepts))
+            overlap = len(set(mem_concepts) & set(concepts_lower))
             score += 0.3 * overlap
-            # Light recency boost so frequently-used memories surface.
+
+            # FTS match bonus
+            if mem.id in fts_ids:
+                score += 0.4
+
+            # Recency boost
             if mem.last_used:
-                score += min(0.2, (time.time() - mem.last_used) < 86400 and 0.2 or 0.0)
+                days_ago = (time.time() - mem.last_used) / 86400
+                if days_ago < 1:
+                    score += 0.2
+                elif days_ago < 7:
+                    score += 0.1
+
+            # Usage frequency bonus (capped)
+            score += min(0.15, mem.usage_count * 0.02)
+
             scored.append((score, mem))
+
         scored.sort(key=lambda x: x[0], reverse=True)
         return [m for _, m in scored[:limit]]
+
+    def search_by_type(
+        self, memory_type: str, limit: int = 20
+    ) -> List[Memory]:
+        """Retrieve memories of a specific type."""
+        rows = self.conn.execute(
+            "SELECT * FROM memories WHERE memory_type = ? ORDER BY importance DESC LIMIT ?",
+            (memory_type, limit),
+        ).fetchall()
+        return [_row_to_memory(r) for r in rows]
 
     def touch(self, memory_id: int) -> None:
         """Mark a memory as recently used. Called after retrieval."""
@@ -181,8 +395,22 @@ class MemoryStore:
         )
         self.conn.commit()
 
+    def update_importance(self, memory_id: int, importance: float) -> None:
+        """Update a memory's importance score."""
+        self.conn.execute(
+            "UPDATE memories SET importance = ? WHERE id = ?",
+            (max(0.0, min(1.0, importance)), memory_id),
+        )
+        self.conn.commit()
+
+    def count(self) -> int:
+        """Total number of memories."""
+        row = self.conn.execute("SELECT COUNT(*) FROM memories").fetchone()
+        return row[0] if row else 0
+
 
 def _row_to_memory(r: sqlite3.Row) -> Memory:
+    keys = r.keys()
     return Memory(
         id=r["id"],
         task=r["task"],
@@ -190,6 +418,9 @@ def _row_to_memory(r: sqlite3.Row) -> Memory:
         concepts=json.loads(r["concepts"] or "[]"),
         content=r["content"],
         importance=r["importance"],
+        confidence=r["confidence"] if "confidence" in keys else 1.0,
+        memory_type=r["memory_type"] if "memory_type" in keys else "semantic",
+        source=r["source"] if "source" in keys else "user",
         created_at=r["created_at"],
         last_used=r["last_used"],
         usage_count=r["usage_count"],
@@ -197,6 +428,7 @@ def _row_to_memory(r: sqlite3.Row) -> Memory:
 
 
 # ---------- conversation store ----------
+
 
 class ConversationStore:
     """Append-only chat log; we read the tail for short-term context."""
@@ -246,9 +478,27 @@ class ConversationStore:
             for r in rows
         ]
 
+    def count_tokens_for_session(self, session_id: str = "default") -> int:
+        """Approximate total tokens without loading all message content into Python."""
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return max(0, row[0] // 4) if row else 0
+
+    def session_count(self, session_id: str = "default") -> int:
+        """Number of messages in a session."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return row[0] if row else 0
+
     def clear(self, session_id: Optional[str] = None) -> int:
         if session_id:
-            cur = self.conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            cur = self.conn.execute(
+                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+            )
         else:
             cur = self.conn.execute("DELETE FROM messages")
         self.conn.commit()

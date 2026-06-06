@@ -6,14 +6,38 @@ Memory Router is a **local-first context optimization layer** and **LLM aggregat
 
 What it does:
 
-1. **Stores structured memory locally** in a Memory Palace (task, domain, concepts, importance).
-   It can also automatically promote useful completed turns into that Memory Palace.
-2. **Retrieves only the relevant context** for each query instead of dragging your full chat history.
-3. **Builds an optimized prompt** with the right memories + a short summary + the last few turns.
-4. **Optionally routes the prompt** to the best available LLM — local (Ollama), OpenAI, Anthropic, Google Gemini, or an optional Ruflo backend.
-5. Or just **prints the optimized prompt** for you to paste into ChatGPT, Claude.ai, Claude Code, VS Code, or any tool you already use.
+1. **Stores structured memory locally** in a Memory Palace (task, domain, concepts, importance) with FTS5 full-text search, confidence decay, and mycelium-inspired associative retrieval.
+2. **Retrieves only the relevant context** for each query using priority-scored assembly instead of dragging your full chat history.
+3. **Builds an optimized prompt** with the right memories + working memory + a short summary + the last few turns — typically saving **80–90% of input tokens**.
+4. **Routes the prompt** to the best available LLM — local (Ollama), OpenAI, Anthropic, Google Gemini — with automatic fallback and adaptive learning from past outcomes.
+5. **Streams responses** from all providers with real-time token display.
 
 Memory Router works *alongside* your existing tools. Your memory stays on your machine; only the trimmed context for the current question is sent to whichever model you pick.
+
+---
+
+## What's New in v0.2
+
+| Feature | Description |
+|---|---|
+| **FTS5 Search** | Full-text search replaces O(n) table scan — instant retrieval at any scale |
+| **Mycelium Network** | Bio-inspired associative memory graph with spreading activation |
+| **Working Memory** | Session-scoped scratchpad with relevance decay and LRU eviction |
+| **Memory Decay** | Exponential confidence decay with reinforcement on usage |
+| **Priority Context** | Each message block scored 0.0–1.0; low-priority dropped first |
+| **Adaptive Routing** | Learns from outcomes (quality/cost/latency) to improve model selection |
+| **Streaming** | Real-time token streaming across all 4 providers |
+| **Fallback Routing** | Automatic provider failover on errors |
+| **Import/Export** | Import from ChatGPT, Claude, or generic JSON; encrypted export |
+| **Consolidation** | Find and merge near-duplicate memories automatically |
+| **Semantic Dedup** | Jaccard-based similarity search before storing |
+| **Encryption at Rest** | AES-256-GCM for exported memories with machine-derived keys |
+| **HMAC Integrity** | Tamper detection on the secrets fallback file |
+| **Structured Logging** | JSON-formatted rotating logs under `~/.memory-router/logs/` |
+| **Health Checks** | Programmatic `check_health()` and `memory-router doctor` |
+| **Config Validation** | Enum/range validation on all config fields |
+| **tiktoken** | Accurate OpenAI token counting with graceful heuristic fallback |
+| **146 Tests** | Comprehensive test suite covering all modules |
 
 ---
 
@@ -25,8 +49,10 @@ Memory Router keeps the entire memory layer on your laptop:
 
 - Conversations: `~/.memory-router/conversations.sqlite`
 - Memories: `~/.memory-router/memories.sqlite`
-- API keys: OS keychain (macOS Keychain, Windows Credential Locker, Linux Secret Service), with a 0600-permission fallback file
-- Vector index (when you enable one): `~/.memory-router/vector_index/`
+- API keys: OS keychain (macOS Keychain, Windows Credential Locker, Linux Secret Service), with HMAC-protected 0600-permission fallback
+- Vector index: `~/.memory-router/vector_index/`
+- Route history: `~/.memory-router/route_history.sqlite` (adaptive routing)
+- Logs: `~/.memory-router/logs/memory-router.log` (JSON-structured, 5 MB rotation)
 
 You can wipe everything with `rm -rf ~/.memory-router`. There is no cloud component to opt out of.
 
@@ -50,45 +76,38 @@ You'll need API keys from [platform.openai.com](https://platform.openai.com), [c
 ```bash
 pip install memory-router
 
-# Optional providers
+# Optional providers & extras
 pip install "memory-router[openai]"
 pip install "memory-router[anthropic]"
 pip install "memory-router[gemini]"
-pip install "memory-router[all]"
+pip install "memory-router[encryption]"   # AES-256-GCM at-rest encryption
+pip install "memory-router[tiktoken]"     # accurate OpenAI token counting
+pip install "memory-router[all]"          # everything
 ```
 
 From source:
 
 ```bash
-git clone https://github.com/yourusername/memory-router
+git clone https://github.com/zucc12309/memory-router
 cd memory-router
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 ### Testing without API keys
 
-You can test the project completely offline:
-
 ```bash
-./.venv/bin/pytest -q
-memory-router init   # choose local mode
+pytest -q                                          # 146 tests, no API keys needed
+memory-router init                                 # choose local mode
 memory-router build-context "Explain this code"
-memory-router memory add "Prefer pytest for tests" --domain software --task code
+memory-router memory add "Prefer pytest" --domain software --task code
 memory-router benchmark --no-run
 ```
 
-The unit tests do not require OpenAI, Anthropic, or Gemini keys. Cloud keys are
-only needed if you choose `api` or cloud-backed `hybrid` routing.
-
-If you have Ollama installed, you can also run the benchmark against a local
-model without paying for API usage:
+If you have Ollama installed, run benchmarks against a local model:
 
 ```bash
 memory-router benchmark --local
 ```
-
-The benchmark prints raw prompt tokens, optimized prompt tokens, estimated
-savings, and a simple quality score when a model backend is available.
 
 ## Setup
 
@@ -113,20 +132,15 @@ memory-router auth gemini
 
 ---
 
-## Three ways to use it
+## Usage
 
 ### 1. `build-context` mode — no LLM call
 
-Memory Router builds the optimized prompt and prints it. Copy it into whatever
-tool you already use (ChatGPT, Claude.ai, Claude Code, Cursor, VS Code Copilot
-chat, your own scripts):
+Build the optimized prompt and print it. Copy into whatever tool you use:
 
 ```bash
 memory-router build-context "Explain bond convexity again"
 ```
-
-When you use `memory-router ask ...`, useful turns can be auto-saved into the
-Memory Palace so future questions can reuse them without manual bookkeeping.
 
 Example output:
 
@@ -136,349 +150,320 @@ Relevant memory used:
 - [prefs/general]   User prefers simple explanations with examples
 
 task=explain  domain=finance  concepts=['bond','convexity']  tokens_sent≈410  saved≈86%
-
-Optimized prompt:
-Relevant memories from past conversations:
-- [finance/explain] User previously studied duration and convexity
-- [prefs/general]   User prefers simple explanations with examples
-
----
-
-Explain bond convexity again
 ```
-
-No API keys are needed for this mode. No network calls happen. Use
-`--show-messages` to print a role-tagged message list instead of a flat prompt.
 
 ### 2. Provider mode — route and answer
 
-When you do want Memory Router to call a model for you:
+```bash
+memory-router "Explain bond convexity"                    # auto-route
+memory-router "Explain this" --stream                     # stream response
+memory-router --no-memory "Private question"              # skip memory
+memory-router --local "Stay on local model"               # force Ollama
+memory-router --provider openai --model gpt-4o "Code it"  # pin provider
+```
+
+### 3. Memory management
 
 ```bash
-memory-router "Explain bond convexity"
-memory-router --no-memory "Private question — don't use my memory palace"
-memory-router --local "Stay on local model"
-
-# Memory palace
-memory-router memory palace
+# Core CRUD
 memory-router memory list
-memory-router memory add "User prefers concise answers" --domain prefs --importance 0.9
+memory-router memory add "Prefer pytest" --domain software --task code --importance 0.9
 memory-router memory delete 3
-memory-router memory clear
+memory-router memory palace               # hierarchical domain→task view
+memory-router memory search "auth tokens" # FTS5 + keyword search
 
-# Config
+# Memory health
+memory-router memory decay                # show decay stats
+memory-router memory decay --prune        # remove stale memories
+
+# Import/Export
+memory-router memory export backup.json             # export all memories
+memory-router memory import conversations.json      # ChatGPT/Claude/generic auto-detect
+
+# Dedup & consolidation
+memory-router memory similar "user prefers dark mode"  # find near-duplicates
+memory-router memory consolidate                       # preview merges (dry run)
+memory-router memory consolidate --apply               # merge near-duplicates
+
+# Mycelium network
+memory-router memory network              # show associative graph stats
+```
+
+### 4. Adaptive routing
+
+When enabled, Memory Router learns from past outcomes to improve model selection:
+
+```bash
+memory-router config set adaptive_routing true
+memory-router routing-report              # see provider performance data
+```
+
+### 5. Config
+
+```bash
 memory-router config show
 memory-router config set mode hybrid
-memory-router config set token_budget 6000
+memory-router config set token_budget 8000
+memory-router config set mycelium_enabled true
+memory-router config set encryption_enabled true
 ```
 
-### Example output
-
-```
-Using: claude-sonnet-4-6
-Memory used: Explain > Finance > fixed-income, duration
-Estimated tokens saved: 84%
-
-╭─ Answer ───────────────────────────────────────────╮
-│ Convexity measures the curvature of a bond's       │
-│ price-yield relationship...                        │
-╰────────────────────────────────────────────────────╯
-```
-
-### 3. MCP server — plug into Claude Code, Cursor, Cline, Continue
-
-Memory Router can run as a [Model Context Protocol](https://modelcontextprotocol.io) server. Any MCP-compatible client can call its tools to retrieve memories, store new ones, build optimized contexts, and capture useful turns — without you copy-pasting anything.
-
-**One-time install** — install globally so MCP clients can find it on PATH (clients spawn the server *outside* any venv you may have active):
+### 6. Diagnostics
 
 ```bash
-# pipx is the standard way to install Python CLIs globally
-brew install pipx                                     # macOS
-# or: python3 -m pip install --user pipx              # any platform
-pipx ensurepath                                       # adds ~/.local/bin to PATH
+memory-router doctor    # system health check
+memory-router stats     # cumulative token savings
+memory-router stats --json
+memory-router stats --reset
+```
 
-# Install Memory Router with the MCP + provider extras
+---
+
+### MCP server — plug into Claude Code, Cursor, Cline, Continue
+
+Memory Router runs as a [Model Context Protocol](https://modelcontextprotocol.io) server. Any MCP-compatible client can call its tools.
+
+**One-time install:**
+
+```bash
+# pipx for global CLI access
+brew install pipx && pipx ensurepath
+
+# Install with extras
 pipx install memory-router
 pipx inject memory-router "memory-router[mcp,gemini,openai,anthropic]"
 
 memory-router init
-which memory-router      # confirm it's on PATH (e.g. ~/.local/bin/memory-router)
 ```
 
-> **Why pipx and not `pip install -e`?** MCP clients (Claude Code, Cursor, etc.) spawn the server as a fresh subprocess without your venv active. If `memory-router` only lives inside a venv, the client can't find it. `pipx` installs it system-wide while keeping its dependencies isolated.
-
-**Register with your client** (pick one or more):
+**Register with your client:**
 
 ```bash
-# Claude Code — use --scope user so it's available in every project
+# Claude Code
 claude mcp add --scope user memory-router -- memory-router mcp serve
 
 # Cursor — add to ~/.cursor/mcp.json
 # { "mcpServers": { "memory-router": { "command": "memory-router", "args": ["mcp", "serve"] } } }
 
-# Cline (VS Code) — Settings → MCP Servers, add:
-# Name: memory-router | Command: memory-router | Args: mcp serve
-
-# Continue — add to ~/.continue/config.yaml
-# mcpServers:
-#   - name: memory-router
-#     command: memory-router
-#     args: ["mcp", "serve"]
+# Cline (VS Code) — Settings → MCP Servers
+# Ccommand: memory-router | Args: mcp serve
 ```
 
-> **Restart your client** after registering. MCP servers are loaded at session start; an already-open Claude Code / Cursor / etc. won't pick up the new config until you restart.
-
-> **Working from a clone?** If you'd rather not install globally, register with the absolute path to your venv binary instead — e.g. `claude mcp add --scope user memory-router -- /Users/you/Documents/GitHub/memory-router/.venv/bin/memory-router mcp serve`. This works but breaks if you delete the venv.
-
-Now in any session of those tools, the agent can call:
+**Available MCP tools (19):**
 
 | Tool | What it does |
 |---|---|
-| `memory_search(query, top_k=5)` | Retrieve top-K relevant memories for a query |
+| `memory_search(query, top_k)` | Retrieve relevant memories with FTS5 + mycelium spread |
 | `memory_store(content, domain, importance, ...)` | Save a durable fact |
-| `memory_list(limit=20)` | List memories ordered by importance + recency |
+| `memory_list(limit)` | List memories by importance + recency |
 | `memory_palace()` | Show domain → task hierarchy |
-| `memory_delete(memory_id)` | Delete by id |
-| `memory_capture(query, answer, ...)` | Promote a useful turn to long-term memory |
-| `build_context(query)` | Build the optimized prompt + report saved tokens |
-| `log_turn(query, answer)` | Record a Q&A into the conversation log |
+| `memory_delete(memory_id)` | Delete by id (+ mycelium edge cleanup) |
+| `memory_capture(query, answer, ...)` | Promote a turn to long-term memory |
+| `memory_find_similar(content, threshold)` | Find near-duplicate memories |
+| `memory_consolidate(threshold, dry_run)` | Merge near-duplicate memories |
+| `memory_decay_stats()` | Memory health (confidence distribution) |
+| `memory_prune(threshold, min_age)` | Remove stale memories |
+| `build_context(query, session_id)` | Build optimized prompt + report savings |
+| `log_turn(query, answer, session_id)` | Record Q&A into conversation log |
+| `working_memory_set(key, value, session_id)` | Store session-scoped context |
+| `working_memory_get(key, session_id)` | Retrieve session context |
+| `working_memory_snapshot(session_id)` | Dump current working memory |
+| `mycelium_stats()` | Associative network health |
+| `mycelium_neighbors(memory_id, limit)` | Direct neighbors in the graph |
 | `stats_summary()` | Cumulative token-saving stats |
-| `stats_reset()` | Wipe stats |
+| `health_check()` | System diagnostics |
 
-Every `build_context` call records its token impact into `stats.sqlite`, so you can run `memory-router stats` from your terminal at any time and see how much the layer is saving across all your sessions.
-
-#### Verify it's working
-
-After restarting your client, ask in chat:
-
-```
-List the memory-router MCP tools that are available.
-```
-
-The agent should ToolSearch and find the 10 tools above. Then a real test:
-
-```
-Remember that I always use python-jose for JWT, never pyjwt.
-```
-
-It should call `memory_store`. Confirm from your terminal:
-
-```bash
-memory-router memory list   # should show the new memory
-memory-router stats         # should start showing call counts
-```
+All tools are rate-limited (configurable via `mcp_rate_limit`), use singleton connection pooling, and validate inputs.
 
 #### Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `command not found: memory-router` when client starts | Memory Router isn't on system PATH. Use `pipx install memory-router` (above) or register with the absolute path to your venv binary. |
-| Tools don't appear in the client | Restart the client. MCP servers load at session start. |
-| Tools available in one project but not another | You used the default `local` scope. Re-register with `claude mcp add --scope user ...`. |
-| `mcp` package missing error on launch | Install the extra: `pipx inject memory-router "memory-router[mcp]"`. |
-| Need to start over | `claude mcp remove memory-router` and re-add. |
-
-#### Optional: auto-augment every Claude Code prompt
-
-If you want every prompt you type in Claude Code to silently get memory context (without the agent having to call `memory_search` first), add this to `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "command": "memory-router build-context --stdin --json"
-      }
-    ]
-  }
-}
-```
-
-The hook is opt-in. Without it, the agent decides when to call `memory_search` based on your prompt; with it, every prompt gets pre-augmented automatically.
+| `command not found: memory-router` | Use `pipx install memory-router` or register with absolute venv path |
+| Tools don't appear | Restart the client (MCP servers load at session start) |
+| Tools available in one project only | Re-register with `--scope user` |
+| `mcp` package missing | `pipx inject memory-router "memory-router[mcp]"` |
 
 ---
-
 
 ## How token saving works
 
 Naive chat clients send **every prior message** with each new query. After 30 turns that's thousands of redundant tokens.
 
-Memory Router builds the context as:
+Memory Router builds context with **priority-scored assembly**:
 
-- 0–N system notes from the **Memory Palace** (top-K relevant memories)
-- 1 short summary of older chat turns
-- the **last 5–8 messages** verbatim
-- the current query
+| Block | Priority | Description |
+|---|---|---|
+| Current query | 1.0 | Always kept — never dropped |
+| System instructions | 0.95 | Coding mode guidance |
+| Working memory | 0.90 | Current session context (active file, variables, etc.) |
+| Memory Palace | 0.80 | Top-K relevant memories + mycelium spread |
+| Recent turns | 0.70–0.20 | Last K turns, decaying by age |
+| Summary | 0.30 | Compressed older history |
 
-And then a token-budget pass trims anything over your limit. The savings shown in the output compares this trimmed context against what a "send-everything" approach would have used.
-
-## Tracking your savings
-
-Every CLI provider call and every MCP `build_context` invocation appends a row into `~/.memory-router/stats.sqlite` — token counts, memories used, provider, model, and estimated cost. No prompt content, no answer text, just the numbers.
-
-See it any time:
-
-```bash
-memory-router stats
-```
-
-Sample output:
-
-```
-╭─ Memory Router — Cumulative Savings ─────────────────────╮
-│              Calls tracked:  47                          │
-│ Tokens that would have been sent:  324,810               │
-│              Tokens actually sent:   38,420              │
-│                       Tokens saved:  286,390  (88%)      │
-│             Output tokens received:   67,210             │
-│                  Memories injected:  131                 │
-│              Estimated cost (real):  $0.124              │
-╰──────────────────────────────────────────────────────────╯
-
-By provider
-  gemini       42 calls   …
-  openai        4 calls   …
-  ollama        1 calls   …
-
-By kind
-  cli_ask              35 calls   …
-  mcp_build_context    12 calls   …
-```
-
-`memory-router stats --reset` wipes the table. `--json` prints raw JSON for piping into other tools.
+The token optimizer drops lowest-priority blocks first and compresses mid-priority ones to fit the budget. This replaces v1's blind positional trimming.
 
 ## Proof: real measured savings
 
-Numbers from a real session, verified against Google's tokenizer (not estimated). The setup was a 4-turn conversation with `gemini-2.5-flash`: build a FastAPI URL shortener, then follow up with three more queries. Memory Palace was seeded with two memories about the user's stack and code preferences.
-
-### Per-query, by the third follow-up
-
-The third follow-up — *"Write a Dockerfile for it"* — sent against the same conversation history:
+Numbers from a real 4-turn session with `gemini-2.5-flash`:
 
 | Metric | Naive (full history) | Memory Router | Saving |
 |---|---|---|---|
-| **Input tokens (real)** | **10,142** | **1,224** | **88%** |
+| **Input tokens** | **10,142** | **1,224** | **88%** |
 | Output tokens | 1,570 | 1,733 | — |
 | **Total cost** | **$0.0016** | **$0.0008** | **~50%** |
 
-Across all four turns of the session: **~17,000 naive input tokens vs ~1,800 sent — about 89% less context shipped.**
-
-### And the answers got *better*
-
-When called naively with the full 10k-token history, the model replied:
-
-> "You're asking for a Dockerfile again! I've provided one twice already. Is there anything specific you'd like to change..."
-
-It got confused by the bloated history. The same model, given Memory Router's 1.2k-token optimized prompt, returned a clean multi-stage Dockerfile right away. This is the well-known "lost in the middle" effect: long contexts dilute attention. Memory Router avoids it by design.
-
-So the real story is two-fold:
-
-1. **~88% fewer input tokens** → ~50% cheaper per query and orders of magnitude cheaper at scale.
-2. **More focused answers** because the model isn't wading through stale turns to find the relevant context.
-
-### Reproduce it yourself
-
-The repo includes two scripts under `scripts/` that you can run against your own `~/.memory-router/conversations.sqlite`:
-
-```bash
-# 1. Run a query through Memory Router (note the "Input tokens (real)" line)
-memory-router --model gemini-2.5-flash "Write a Dockerfile for it"
-
-# 2. Run the same query naively, with the full history, no Memory Router
-python scripts/naive_call.py "Write a Dockerfile for it"
-```
-
-The second script reads the same conversation history and calls Gemini directly. Compare the two `Input tokens (real)` numbers — that's your verified saving for that query.
+The naive prompt caused the model to say *"You're asking for a Dockerfile again!"* — confused by bloated history. Memory Router's optimized prompt got a clean answer immediately. This is the well-known "lost in the middle" effect.
 
 ---
 
-## Project layout
+## Memory System Architecture
+
+### Four Memory Types
+
+| Type | Purpose | Example |
+|---|---|---|
+| **Semantic** | Durable facts | "User's stack is TypeScript + pnpm" |
+| **Episodic** | Past events/interactions | "User debugged a CORS issue on 2024-03-15" |
+| **Procedural** | How-to knowledge | "Deploy to prod: run tests → build → push → tag" |
+| **Working** | Session-scoped scratch | Current file being edited, active error message |
+
+### Mycelium Network
+
+Inspired by fungal mycelium networks, memories form associative connections:
+
+- **Co-retrieval strengthening**: When memories are retrieved together, the edge between them gets stronger
+- **Spreading activation**: Querying one memory surfaces associated memories through multi-hop graph traversal
+- **Decay**: Unused edges weaken over time; very weak edges are pruned
+
+### Confidence Decay
+
+Memories lose confidence over time unless reinforced:
+
+- **Decay**: Exponential decay based on days since last use
+- **Reinforcement**: Using a memory boosts its importance and resets the decay clock
+- **Pruning**: `memory-router memory decay --prune` removes memories below threshold
+
+### Memory Consolidation
+
+Over time, similar memories accumulate. Consolidation merges near-duplicates:
+
+```bash
+memory-router memory consolidate          # preview (dry run)
+memory-router memory consolidate --apply  # merge clusters
+```
+
+The algorithm uses Jaccard word-overlap with union-find clustering. The highest-importance memory becomes the anchor; concepts are merged from all cluster members.
+
+---
+
+## Project Layout
 
 ```
 memory_router/
-├── cli.py                  # Typer CLI entry point
-├── config.py               # ~/.memory-router/config.yaml
-├── classifier.py           # rule-based task/domain/concept extraction
-├── context_builder.py      # assembles trimmed messages for the LLM
-├── token_optimizer.py      # enforces token budget
-├── router.py               # picks (provider, model) based on rules
+├── __init__.py                # Public API exports (v0.2)
+├── cli.py                     # Typer CLI with streaming, import/export, routing
+├── config.py                  # Config with validation (enum, range constraints)
+├── classifier.py              # Rule-based task/domain/concept extraction
+├── context_builder.py         # Priority-scored context assembly
+├── token_optimizer.py         # Budget enforcement (priority + positional)
+├── router.py                  # Rule-based routing with fallback
+├── adaptive_router.py         # Outcome-learning adaptive router
+├── health.py                  # Structured health checks
+├── stats.py                   # Cumulative usage statistics
+├── benchmark.py               # Token savings & quality benchmarks
 ├── memory/
-│   ├── palace.py           # domain → task hierarchy view
-│   ├── sqlite_store.py     # MemoryStore + ConversationStore
-│   ├── vector_store.py     # extension point for FAISS/Chroma/etc.
-│   └── summarizer.py       # cheap deterministic summarizer
+│   ├── sqlite_store.py        # MemoryStore + ConversationStore + FTS5
+│   ├── palace.py              # Domain → task hierarchy view
+│   ├── mycelium.py            # Associative memory graph
+│   ├── working_memory.py      # Session-scoped scratchpad
+│   ├── decay.py               # Confidence decay + reinforcement
+│   ├── consolidation.py       # Near-duplicate merging
+│   ├── importer.py            # Import/export (ChatGPT, Claude, generic JSON)
+│   ├── summarizer.py          # Sentence-boundary summarizer
+│   ├── vector_store.py        # NumPy/pure-Python cosine similarity backend
+│   └── auto_capture.py        # Auto-promote useful turns to memory
 ├── providers/
-│   ├── base.py             # BaseProvider interface
-│   ├── ollama_provider.py  # local Ollama via HTTP
-│   ├── openai_provider.py  # lazy OpenAI SDK
-│   ├── anthropic_provider.py
-│   └── ruflo_provider.py   # optional multi-agent
+│   ├── base.py                # BaseProvider + StreamChunk interfaces
+│   ├── ollama_provider.py     # Local Ollama via HTTP (streaming)
+│   ├── openai_provider.py     # OpenAI SDK (streaming)
+│   ├── anthropic_provider.py  # Anthropic SDK (streaming)
+│   ├── gemini_provider.py     # Google GenAI SDK (streaming)
+│   └── ruflo_provider.py      # Optional multi-agent backend
 ├── security/
-│   └── keychain.py         # OS keychain + 0600-fallback
+│   ├── keychain.py            # OS keychain + HMAC-protected fallback
+│   └── encryption.py          # AES-256-GCM with machine-derived keys
 └── utils/
-    └── tokens.py           # estimator + savings helper
+    ├── tokens.py              # tiktoken + heuristic estimator
+    └── logging.py             # JSON-structured rotating file logs
 ```
+
+---
+
+## Python API
+
+```python
+from memory_router import (
+    MemoryStore, Memory, classify, Config,
+    build_context, Router, check_health, load_config,
+)
+
+# Store and search memories
+store = MemoryStore()
+store.add(Memory(content="User prefers dark mode", domain="prefs", importance=0.9))
+results = store.search(query_text="theme preferences")
+
+# Find near-duplicates before storing
+similar = store.find_similar("User likes dark theme", threshold=0.6)
+
+# Classify a query
+cls = classify("Write a Python function to sort a list")
+# → Classification(task='code', domain='software', concepts=[...], complexity=0.6)
+
+# Health check
+report = check_health()
+print(report.overall)  # "ok" | "degraded" | "unhealthy"
+```
+
+---
+
+## Security
+
+- **API keys**: OS keychain first, HMAC-SHA256 verified fallback file at 0600 permissions
+- **Encryption at rest**: Optional AES-256-GCM for exported memories (`pip install memory-router[encryption]`)
+- **Input validation**: All MCP tool inputs sanitized (session IDs regex-validated, text truncated at boundaries)
+- **Rate limiting**: Configurable per-minute limit on MCP tool calls (default: 100/min)
+- **No secrets in config**: Keys never written to `config.yaml`
+- **Tamper detection**: HMAC integrity check on the secrets fallback file
 
 ---
 
 ## What Memory Router is *not*
 
-To keep the scope honest:
-
 - ❌ Not a coding assistant or pair-programmer
 - ❌ Does not execute shell commands
-- ❌ Does not modify your files
-- ❌ Does not run git
+- ❌ Does not modify your files or run git
 - ❌ Not an IDE or Claude Code replacement
+- ✅ A **memory + prompt-optimization layer** that works alongside your existing tools
 
-It is a **memory + prompt-optimization layer**. Use it alongside your existing
-tools — that's the point.
-
-## Working with code answers
-
-Memory Router prints answers to your terminal. **It does not create files, run shell commands, install dependencies, modify your repo, or run git.** If the model returns ten code blocks, you get ten code blocks of text — copy them into your editor yourself, or pipe them to a tool whose job is execution.
-
-This is intentional, not a missing feature. Two reasons:
-
-1. **Trust boundary.** Memory Router is meant to be a thin, auditable layer: context in, text out. The moment a tool can write files based on LLM output, you've handed the model write-access to your filesystem. We don't.
-2. **Better tools already exist** for code execution — Claude Code, Cursor, Aider, Copilot Workspace. They handle diff review, sandboxing, and undo properly. Memory Router would be a worse version of those if it tried.
-
-The mental model: **Memory Router is the prompt-prep layer. Your IDE / Claude Code / hands are the execution layer.**
-
-### Three workflows for code answers
-
-**1. Save the answer and copy code blocks manually** — fine for one-off scaffolding:
-
-```bash
-memory-router --model gemini-2.5-flash "Build a FastAPI URL shortener" > plan.md
-# Open plan.md in your editor, copy code blocks into real files
-```
-
-**2. Build the optimized prompt and hand it to a tool that executes** — the recommended workflow:
-
-```bash
-memory-router build-context "Add JWT auth to my URL shortener" | pbcopy
-# Paste into Claude Code (or Cursor's chat) — it can write files, run tests, etc.
-# You get Memory Router's context optimization PLUS your IDE's execution.
-```
-
-**3. Pair with `aider` or any CLI agent** — they're designed for repo edits; Memory Router can prepare the prompt:
-
-```bash
-memory-router build-context "Refactor the auth flow to use refresh tokens" > /tmp/prompt.txt
-aider --message-file /tmp/prompt.txt
-```
+---
 
 ## Roadmap
 
+- [x] ~~FTS5 full-text search~~
+- [x] ~~Streaming responses~~
+- [x] ~~Import from ChatGPT/Claude exports~~
+- [x] ~~tiktoken integration~~
+- [x] ~~Per-domain importance decay~~
+- [x] ~~Adaptive routing with outcome learning~~
+- [x] ~~Mycelium associative memory network~~
+- [x] ~~Encryption at rest~~
 - [ ] Real vector embeddings (FAISS / sqlite-vec / Chroma)
-- [ ] LLM-backed concept extraction as a fallback to the rule-based classifier
+- [ ] LLM-backed concept extraction as a classifier fallback
 - [ ] LLM-based summarizer (opt-in, runs on local model)
-- [ ] Per-domain importance decay
-- [ ] Streaming responses
-- [ ] `memory-router import` for ChatGPT/Claude exports
+- [ ] Multi-user / team memory sharing
+- [ ] Web dashboard for memory visualization
 - [ ] First-class Ruflo plugin once the public API stabilizes
-- [ ] `tiktoken` integration for precise OpenAI token counts
 
 ---
 

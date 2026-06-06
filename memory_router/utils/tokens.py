@@ -1,24 +1,59 @@
 """Token estimation utilities.
 
-We avoid hard dependencies on tiktoken so the MVP runs anywhere. The estimator
-uses a ~4-chars-per-token heuristic which is accurate enough for budget checks
-and the savings display. Swap in tiktoken later for precision.
+Uses tiktoken when available for accurate counts; falls back to an improved
+heuristic that differentiates code vs prose (code has shorter tokens on average
+due to operators, brackets, and short variable names).
 """
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Optional
+
+# Lazy-loaded tiktoken encoding
+_ENCODING = None
+_TIKTOKEN_AVAILABLE: Optional[bool] = None
 
 
-CHARS_PER_TOKEN = 4
+def _get_encoding():
+    """Load tiktoken encoding lazily, caching the result."""
+    global _ENCODING, _TIKTOKEN_AVAILABLE
+    if _TIKTOKEN_AVAILABLE is False:
+        return None
+    if _ENCODING is not None:
+        return _ENCODING
+    try:
+        import tiktoken
+
+        _ENCODING = tiktoken.get_encoding("cl100k_base")
+        _TIKTOKEN_AVAILABLE = True
+        return _ENCODING
+    except (ImportError, Exception):
+        _TIKTOKEN_AVAILABLE = False
+        return None
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token count using the 4-chars-per-token rule of thumb."""
+    """Token count — uses tiktoken if available, improved heuristic otherwise."""
     if not text:
         return 0
-    # Add 1 to avoid 0 for very short non-empty strings.
-    return max(1, len(text) // CHARS_PER_TOKEN)
+
+    enc = _get_encoding()
+    if enc is not None:
+        return len(enc.encode(text))
+
+    # Improved heuristic: different ratio for code vs prose
+    chars = len(text)
+    code_indicators = (
+        text.count("{")
+        + text.count("}")
+        + text.count("(")
+        + text.count(")")
+        + text.count(";")
+        + text.count("=>")
+    )
+    if code_indicators > chars / 50:
+        return max(1, int(chars / 3.2))  # code is ~3.2 chars/token
+    return max(1, int(chars / 3.7))  # prose is ~3.7 chars/token
 
 
 def estimate_messages_tokens(messages: Iterable[dict]) -> int:
@@ -40,28 +75,33 @@ def percent_saved(full_tokens: int, sent_tokens: int) -> int:
 
 # ---------- pricing table ----------
 # Approximate USD per 1M tokens. Update as providers change pricing.
-# Format: model_id_prefix → (input_per_million, output_per_million)
+# Format: model_id_prefix -> (input_per_million, output_per_million)
 _PRICING = {
     # OpenAI
-    "gpt-4o-mini":     (0.15, 0.60),
-    "gpt-4o":          (2.50, 10.00),
-    "gpt-5-nano":      (0.05, 0.40),
-    "gpt-5-mini":      (0.25, 2.00),
-    "gpt-5":           (1.25, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4.1-nano": (0.10, 0.40),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-4.1": (2.00, 8.00),
+    "o3-mini": (1.10, 4.40),
+    "o3": (10.00, 40.00),
+    "o4-mini": (1.10, 4.40),
     # Anthropic
-    "claude-haiku":    (0.80, 4.00),
-    "claude-sonnet":   (3.00, 15.00),
-    "claude-opus":     (15.00, 75.00),
+    "claude-haiku": (0.80, 4.00),
+    "claude-sonnet": (3.00, 15.00),
+    "claude-opus": (15.00, 75.00),
     # Google
-    "gemini-2.5-flash":  (0.10, 0.40),
-    "gemini-2.5-pro":    (1.25, 5.00),
-    "gemini-1.5-flash":  (0.075, 0.30),
-    "gemini-1.5-pro":    (1.25, 5.00),
+    "gemini-2.5-flash": (0.15, 0.60),
+    "gemini-2.5-pro": (1.25, 10.00),
+    "gemini-2.0-flash": (0.10, 0.40),
+    "gemini-1.5-flash": (0.075, 0.30),
+    "gemini-1.5-pro": (1.25, 5.00),
     # Local — free
-    "llama":           (0.0, 0.0),
-    "mistral":         (0.0, 0.0),
-    "qwen":            (0.0, 0.0),
-    "phi":             (0.0, 0.0),
+    "llama": (0.0, 0.0),
+    "mistral": (0.0, 0.0),
+    "qwen": (0.0, 0.0),
+    "phi": (0.0, 0.0),
+    "deepseek": (0.0, 0.0),
 }
 
 
@@ -69,7 +109,7 @@ def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> floa
     """Best-effort cost estimate. Returns 0.0 if model isn't in the table."""
     m = (model or "").lower()
     rate_in, rate_out = 0.0, 0.0
-    # Match the longest prefix so 'claude-opus-4-7' lands on 'claude-opus' first.
+    # Match the longest prefix so 'claude-opus-4-7' lands on 'claude-opus'.
     best = ""
     for key in _PRICING:
         if m.startswith(key) or key in m:

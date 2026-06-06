@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memory-router"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first LLM router with structured Memory Palace for token-efficient context"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -37,11 +37,17 @@ openai = ["openai>=1.0.0"]
 anthropic = ["anthropic>=0.18.0"]
 gemini = ["google-genai>=0.3.0"]
 mcp = ["mcp>=1.0.0"]
+encryption = ["cryptography>=41.0.0"]
+tiktoken = ["tiktoken>=0.5.0"]
+numpy = ["numpy>=1.24.0"]
 all = [
     "openai>=1.0.0",
     "anthropic>=0.18.0",
     "google-genai>=0.3.0",
     "mcp>=1.0.0",
+    "cryptography>=41.0.0",
+    "tiktoken>=0.5.0",
+    "numpy>=1.24.0",
 ]
 dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.1.0"]
 

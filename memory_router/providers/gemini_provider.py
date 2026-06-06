@@ -1,7 +1,6 @@
-"""Google Gemini provider — uses the modern `google-genai` SDK.
+"""Google Gemini provider with streaming support.
 
-The legacy `google-generativeai` package is deprecated, so we use
-`google-genai` (Google GenAI SDK). Install with:
+Uses the modern `google-genai` SDK. Install with:
     pip install memory-router[gemini]
 
 Gemini takes the system prompt out-of-band via GenerateContentConfig, and uses
@@ -10,9 +9,9 @@ Gemini takes the system prompt out-of-band via GenerateContentConfig, and uses
 
 from __future__ import annotations
 
-from typing import List
+from typing import Generator, List
 
-from .base import BaseProvider, ProviderResult
+from .base import BaseProvider, ProviderResult, StreamChunk
 from ..security.keychain import get_secret
 from ..utils.tokens import estimate_messages_tokens, estimate_tokens
 
@@ -49,27 +48,30 @@ class GeminiProvider(BaseProvider):
         except ImportError:
             return False
 
-    def complete(self, model: str, messages: List[dict], **kwargs) -> ProviderResult:
-        client = self._ensure_client()
-        from google.genai import types  # type: ignore
-
-        # Pull system prompt(s) — Gemini takes them as `system_instruction`.
+    def _prepare_messages(self, messages: List[dict]):
+        """Split system/chat and convert to Gemini format."""
         system_parts = [m["content"] for m in messages if m.get("role") == "system"]
         chat = [m for m in messages if m.get("role") != "system"]
 
-        # Convert history into Gemini's content/parts shape.
-        # OpenAI roles: user / assistant / system  →  Gemini roles: user / model.
         history = []
         for m in chat[:-1]:
             role = "model" if m["role"] == "assistant" else "user"
             history.append({"role": role, "parts": [{"text": m["content"]}]})
 
         latest = chat[-1]["content"] if chat else ""
+        return system_parts, history, latest
 
+    def _make_config(self, system_parts: List[str]):
+        from google.genai import types  # type: ignore
         config_kwargs = {}
         if system_parts:
             config_kwargs["system_instruction"] = "\n\n".join(system_parts)
-        cfg = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+        return types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+
+    def complete(self, model: str, messages: List[dict], **kwargs) -> ProviderResult:
+        client = self._ensure_client()
+        system_parts, history, latest = self._prepare_messages(messages)
+        cfg = self._make_config(system_parts)
 
         chat_session = client.chats.create(model=model, history=history, config=cfg)
         resp = chat_session.send_message(latest)
@@ -79,3 +81,49 @@ class GeminiProvider(BaseProvider):
         in_tok = getattr(usage, "prompt_token_count", None) or estimate_messages_tokens(messages)
         out_tok = getattr(usage, "candidates_token_count", None) or estimate_tokens(text)
         return ProviderResult(text=text, model=model, input_tokens=in_tok, output_tokens=out_tok)
+
+    def stream(
+        self, model: str, messages: List[dict], **kwargs
+    ) -> Generator[StreamChunk, None, None]:
+        """Stream response from Gemini using generate_content with stream=True."""
+        client = self._ensure_client()
+        system_parts, history, latest = self._prepare_messages(messages)
+
+        # Build full contents list for streaming
+        contents = list(history)
+        contents.append({"role": "user", "parts": [{"text": latest}]})
+
+        config_kwargs = {}
+        if system_parts:
+            config_kwargs["system_instruction"] = "\n\n".join(system_parts)
+
+        from google.genai import types  # type: ignore
+        cfg = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+
+        full_text = []
+        try:
+            for chunk in client.models.generate_content_stream(
+                model=model, contents=contents, config=cfg
+            ):
+                text = getattr(chunk, "text", "") or ""
+                if text:
+                    full_text.append(text)
+                    yield StreamChunk(text=text, finished=False)
+        except Exception:
+            # If streaming isn't supported, fall back to non-streaming
+            result = self.complete(model, messages, **kwargs)
+            yield StreamChunk(
+                text=result.text,
+                finished=True,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+            )
+            return
+
+        combined = "".join(full_text)
+        yield StreamChunk(
+            text="",
+            finished=True,
+            input_tokens=estimate_messages_tokens(messages),
+            output_tokens=estimate_tokens(combined),
+        )

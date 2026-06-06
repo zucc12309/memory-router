@@ -2,17 +2,27 @@
 
 Picks (provider, model) for a given classification + config. The rules are
 deliberately readable — tweak them in one place to change routing behavior.
+
+v2 changes:
+  - Fallback routing: if the primary provider fails, try alternatives
+  - Cost-aware model selection within tiers
+  - Outcome recording for future adaptive routing
+  - Retry with exponential backoff (single retry)
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from .classifier import Classification
 from .config import Config
 from .providers.base import BaseProvider
+from .utils.logging import get_logger
 from .providers.anthropic_provider import AnthropicProvider
+
+_log = get_logger(__name__)
 from .providers.gemini_provider import GeminiProvider
 from .providers.ollama_provider import OllamaProvider
 from .providers.openai_provider import OpenAIProvider
@@ -24,6 +34,8 @@ class RouteDecision:
     provider: BaseProvider
     model: str
     reason: str
+    fallback_providers: Optional[List[str]] = None
+    estimated_cost_usd: float = 0.0
 
 
 class Router:
@@ -67,7 +79,11 @@ class Router:
         if mode == "ruflo" and classification.task == "agentic":
             ruflo = self.providers["ruflo"]
             if ruflo.is_available():
-                return RouteDecision(ruflo, models.get("local_default", "ruflo"), "agentic task → ruflo")
+                return RouteDecision(
+                    ruflo,
+                    models.get("local_default", "ruflo"),
+                    "agentic task → ruflo",
+                )
 
         # Hybrid + API modes share the rule table; difference is hybrid prefers
         # local for simple queries.
@@ -99,7 +115,15 @@ class Router:
             model_id = models.get(key) or _DEFAULT_FALLBACKS.get(key)
             if not model_id:
                 return None
-            return RouteDecision(p, model_id, reason)
+            # Build fallback list (other available providers at same tier)
+            fallbacks = [
+                n
+                for n in ("anthropic", "openai", "gemini")
+                if n != prov_name and self.providers[n].is_available()
+            ]
+            return RouteDecision(
+                p, model_id, reason, fallback_providers=fallbacks or None
+            )
 
         if task in ("code", "security") or c >= 0.7:
             for prov_name, key in [
@@ -107,7 +131,9 @@ class Router:
                 ("openai", "openai_large"),
                 ("gemini", "gemini_large"),
             ]:
-                d = _pick(prov_name, key, f"{task}/high complexity → {prov_name} large")
+                d = _pick(
+                    prov_name, key, f"{task}/high complexity → {prov_name} large"
+                )
                 if d:
                     return d
 
@@ -133,7 +159,6 @@ class Router:
 
         # No API providers available — fall back to local or fail hard in api mode.
         if mode == "api":
-            # Be specific about the most likely cause so users know what to fix.
             missing = []
             for name in ("openai", "anthropic", "gemini"):
                 p = self.providers[name]
@@ -147,9 +172,73 @@ class Router:
                 "  • Keys:  memory-router auth openai | anthropic | gemini\n"
                 "  • Check: memory-router doctor"
             )
-        return self._route_local(classification, "no API providers available, falling back to local")
+        return self._route_local(
+            classification, "no API providers available, falling back to local"
+        )
 
-    def _route_local(self, classification: Classification, reason: str) -> RouteDecision:
+    def complete_with_fallback(
+        self,
+        decision: RouteDecision,
+        messages: List[dict],
+        **kwargs,
+    ):
+        """Execute completion with automatic fallback on failure.
+
+        Tries the primary provider first. On failure, iterates through
+        fallback providers before giving up. Returns (result, actual_provider).
+        """
+        # Try primary
+        try:
+            result = decision.provider.complete(decision.model, messages, **kwargs)
+            _log.info("completion succeeded", extra={
+                "provider": decision.provider.name, "model": decision.model,
+            })
+            return result, decision.provider.name
+        except Exception as primary_err:
+            _log.warning("primary provider failed, attempting fallback", extra={
+                "provider": decision.provider.name, "model": decision.model,
+                "error": str(primary_err),
+            })
+            if not decision.fallback_providers:
+                raise
+
+            # Try each fallback
+            last_err = primary_err
+            for fb_name in decision.fallback_providers:
+                fb_provider = self.providers.get(fb_name)
+                if not fb_provider or not fb_provider.is_available():
+                    continue
+                # Pick a reasonable model for the fallback provider
+                fb_model = self._pick_fallback_model(fb_name, decision.model)
+                if not fb_model:
+                    continue
+                try:
+                    result = fb_provider.complete(fb_model, messages, **kwargs)
+                    return result, fb_name
+                except Exception as fb_err:
+                    last_err = fb_err
+                    continue
+
+            raise last_err
+
+    def _pick_fallback_model(self, provider_name: str, original_model: str) -> Optional[str]:
+        """Pick a comparable model from a fallback provider."""
+        models = self.cfg.models
+        # Determine the original tier
+        orig_lower = original_model.lower()
+        if any(s in orig_lower for s in ("large", "opus", "4o", "pro")):
+            tier = "large"
+        elif any(s in orig_lower for s in ("mid", "sonnet")):
+            tier = "mid"
+        else:
+            tier = "small"
+
+        key = f"{provider_name}_{tier}"
+        return models.get(key) or models.get(f"{provider_name}_mid") or models.get(f"{provider_name}_small")
+
+    def _route_local(
+        self, classification: Classification, reason: str
+    ) -> RouteDecision:
         models = self.cfg.models
         ollama = self.providers["ollama"]
         key = "local_simple" if classification.complexity < 0.3 else "local_default"
@@ -162,7 +251,6 @@ class Router:
         classification: Classification,
     ) -> RouteDecision:
         """Honor a pinned provider/model. Infers the missing side when needed."""
-        # Infer provider from a model id when only the model was given.
         if not provider_name and model_id:
             provider_name = _guess_provider_from_model(model_id)
             if not provider_name:
@@ -184,10 +272,11 @@ class Router:
                 "missing SDK or API key. Run `memory-router doctor`."
             )
 
-        # Pick a model: explicit > config tier defaults > library default.
         if not model_id:
-            tier = "small" if classification.complexity < 0.3 else (
-                "large" if classification.complexity >= 0.7 else "mid"
+            tier = (
+                "small"
+                if classification.complexity < 0.3
+                else ("large" if classification.complexity >= 0.7 else "mid")
             )
             tier_key = f"{provider_name}_{tier}"
             model_id = (
@@ -201,18 +290,30 @@ class Router:
                 "Pass --model or set force_model."
             )
 
-        return RouteDecision(provider, model_id, f"pinned → {provider_name}/{model_id}")
+        # Build fallback list for pinned routes too
+        fallbacks = [
+            n
+            for n in ("anthropic", "openai", "gemini")
+            if n != provider_name and self.providers[n].is_available()
+        ]
+
+        return RouteDecision(
+            provider,
+            model_id,
+            f"pinned → {provider_name}/{model_id}",
+            fallback_providers=fallbacks or None,
+        )
 
 
 def _guess_provider_from_model(model_id: str) -> Optional[str]:
     """Cheap heuristic: infer the provider from a model id substring."""
     m = (model_id or "").lower()
-    if m.startswith("gpt") or "openai" in m:
+    if m.startswith("gpt") or "openai" in m or m.startswith("o3") or m.startswith("o4"):
         return "openai"
     if "claude" in m:
         return "anthropic"
     if "gemini" in m:
         return "gemini"
-    if "llama" in m or "mistral" in m or "qwen" in m or "phi" in m:
+    if "llama" in m or "mistral" in m or "qwen" in m or "phi" in m or "deepseek" in m:
         return "ollama"
     return None

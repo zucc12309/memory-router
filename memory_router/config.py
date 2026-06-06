@@ -57,6 +57,13 @@ class Config:
     # Either is empty string for "auto-pick". Override per-call with --provider/--model.
     force_provider: str = ""   # e.g. "gemini" | "openai" | "anthropic" | "ollama"
     force_model: str = ""      # e.g. "gemini-2.5-flash" | "gpt-4o-mini"
+    # v2 features
+    mycelium_enabled: bool = True        # enable mycelium memory network
+    memory_decay_enabled: bool = True    # enable confidence decay on memories
+    working_memory_capacity: int = 20    # max working memory slots per session
+    adaptive_routing: bool = False       # enable outcome-learning adaptive router
+    encryption_enabled: bool = False     # enable AES-256-GCM encryption at rest
+    mcp_rate_limit: int = 100            # MCP tool calls per minute
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -119,6 +126,19 @@ def is_initialized() -> bool:
     return CONFIG_PATH.exists()
 
 
+_VALID_MODES = {"local", "api", "hybrid", "ruflo"}
+_VALID_PROVIDERS = {"ollama", "openai", "anthropic", "gemini", "ruflo"}
+
+# Range constraints for numeric fields: (min, max)
+_RANGE_CONSTRAINTS = {
+    "token_budget": (100, 200_000),
+    "max_recent_messages": (1, 50),
+    "max_relevant_memories": (0, 50),
+    "working_memory_capacity": (1, 200),
+    "mcp_rate_limit": (1, 10_000),
+}
+
+
 def set_value(key: str, value: Any) -> Config:
     """Update a single config field. Used by `memory-router config set`."""
     cfg = load_config()
@@ -130,6 +150,21 @@ def set_value(key: str, value: Any) -> Config:
         value = str(value).lower() in ("1", "true", "yes", "on")
     elif isinstance(current, int):
         value = int(value)
+    elif isinstance(current, float):
+        value = float(value)
+
+    # Validate enum fields
+    if key == "mode" and value not in _VALID_MODES:
+        raise ValueError(f"Invalid mode '{value}'. Valid: {', '.join(sorted(_VALID_MODES))}")
+    if key == "default_provider" and value not in _VALID_PROVIDERS:
+        raise ValueError(f"Invalid provider '{value}'. Valid: {', '.join(sorted(_VALID_PROVIDERS))}")
+
+    # Validate numeric ranges
+    if key in _RANGE_CONSTRAINTS:
+        lo, hi = _RANGE_CONSTRAINTS[key]
+        if not (lo <= value <= hi):
+            raise ValueError(f"{key} must be between {lo} and {hi}, got {value}")
+
     setattr(cfg, key, value)
     save_config(cfg)
     return cfg

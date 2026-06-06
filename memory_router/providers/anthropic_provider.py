@@ -1,4 +1,4 @@
-"""Anthropic provider stub.
+"""Anthropic provider with streaming support.
 
 Install with: `pip install memory-router[anthropic]`. Anthropic's SDK takes
 the system prompt out-of-band, so we split it from the messages list before
@@ -7,9 +7,9 @@ sending.
 
 from __future__ import annotations
 
-from typing import List
+from typing import Generator, List
 
-from .base import BaseProvider, ProviderResult
+from .base import BaseProvider, ProviderResult, StreamChunk
 from ..security.keychain import get_secret
 from ..utils.tokens import estimate_messages_tokens, estimate_tokens
 
@@ -46,20 +46,50 @@ class AnthropicProvider(BaseProvider):
         except ImportError:
             return False
 
-    def complete(self, model: str, messages: List[dict], **kwargs) -> ProviderResult:
-        client = self._ensure_client()
-        # Pull a system message out — Anthropic uses a top-level `system` field.
+    def _split_messages(self, messages: List[dict]):
+        """Split system messages from chat messages for Anthropic API."""
         system_parts = [m["content"] for m in messages if m.get("role") == "system"]
         chat = [m for m in messages if m.get("role") != "system"]
+        system_text = "\n\n".join(system_parts) if system_parts else ""
+        return system_text, chat
+
+    def complete(self, model: str, messages: List[dict], **kwargs) -> ProviderResult:
+        client = self._ensure_client()
+        system_text, chat = self._split_messages(messages)
         resp = client.messages.create(
             model=model,
             max_tokens=kwargs.get("max_tokens", 1024),
-            system="\n\n".join(system_parts) if system_parts else "",
+            system=system_text,
             messages=chat,
         )
-        # The SDK returns a list of content blocks; concatenate text blocks.
         text = "".join(getattr(b, "text", "") for b in resp.content)
         usage = getattr(resp, "usage", None)
         in_tok = getattr(usage, "input_tokens", None) or estimate_messages_tokens(messages)
         out_tok = getattr(usage, "output_tokens", None) or estimate_tokens(text)
         return ProviderResult(text=text, model=model, input_tokens=in_tok, output_tokens=out_tok)
+
+    def stream(
+        self, model: str, messages: List[dict], **kwargs
+    ) -> Generator[StreamChunk, None, None]:
+        """Stream response tokens from Anthropic."""
+        client = self._ensure_client()
+        system_text, chat = self._split_messages(messages)
+        full_text = []
+
+        with client.messages.stream(
+            model=model,
+            max_tokens=kwargs.get("max_tokens", 1024),
+            system=system_text,
+            messages=chat,
+        ) as stream:
+            for text in stream.text_stream:
+                full_text.append(text)
+                yield StreamChunk(text=text, finished=False)
+
+        combined = "".join(full_text)
+        yield StreamChunk(
+            text="",
+            finished=True,
+            input_tokens=estimate_messages_tokens(messages),
+            output_tokens=estimate_tokens(combined),
+        )

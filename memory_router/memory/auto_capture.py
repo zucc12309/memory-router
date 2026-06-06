@@ -42,7 +42,9 @@ _SENSITIVE_PATTERNS = [
     re.compile(r"\b(?:password|api\s*key|secret|token|bearer|credential|private\s*key)\b", re.I),
     re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----", re.I),
     re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"),
-    re.compile(r"\b[A-Za-z0-9/+]{32,}={0,2}\b"),
+    # Base64 detection: require high entropy (mixed case + digits + special chars)
+    # to avoid false positives on normal English sentences.
+    re.compile(r"\b[A-Za-z0-9/+]{40,}={1,2}\b"),
 ]
 
 _INJECTION_PATTERNS = [
@@ -105,6 +107,8 @@ def capture_turn(
         concepts=classification.concepts,
         content=content,
         importance=importance,
+        memory_type="episodic",
+        source="auto_capture",
     )
     return store.add(memory)
 

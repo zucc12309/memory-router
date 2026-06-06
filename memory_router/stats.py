@@ -115,35 +115,56 @@ class StatsSummary:
         }
 
 
+def _query(conn, sql_no_filter: str, sql_filtered: str, params: tuple):
+    """Run either the unfiltered or filtered SQL based on params."""
+    if params:
+        return conn.execute(sql_filtered, params)
+    return conn.execute(sql_no_filter)
+
+
 def summarize_stats(since: Optional[float] = None) -> StatsSummary:
     """Aggregate the usage_events table into a single summary."""
     conn = _connect()
-    where = ""
     params: tuple = ()
     if since is not None:
-        where = "WHERE ts >= ?"
         params = (since,)
 
-    row = conn.execute(
-        f"""SELECT COUNT(*),
-                   COALESCE(SUM(naive_tokens), 0),
-                   COALESCE(SUM(sent_tokens), 0),
-                   COALESCE(SUM(output_tokens), 0),
-                   COALESCE(SUM(memories_used), 0),
-                   COALESCE(SUM(cost_usd), 0)
-            FROM usage_events {where}""",
+    row = _query(
+        conn,
+        """SELECT COUNT(*),
+                  COALESCE(SUM(naive_tokens), 0),
+                  COALESCE(SUM(sent_tokens), 0),
+                  COALESCE(SUM(output_tokens), 0),
+                  COALESCE(SUM(memories_used), 0),
+                  COALESCE(SUM(cost_usd), 0)
+           FROM usage_events""",
+        """SELECT COUNT(*),
+                  COALESCE(SUM(naive_tokens), 0),
+                  COALESCE(SUM(sent_tokens), 0),
+                  COALESCE(SUM(output_tokens), 0),
+                  COALESCE(SUM(memories_used), 0),
+                  COALESCE(SUM(cost_usd), 0)
+           FROM usage_events WHERE ts >= ?""",
         params,
     ).fetchone()
 
     by_provider = {}
-    for prov, calls, naive, sent, cost in conn.execute(
-        f"""SELECT COALESCE(provider, 'n/a'),
-                   COUNT(*),
-                   COALESCE(SUM(naive_tokens), 0),
-                   COALESCE(SUM(sent_tokens), 0),
-                   COALESCE(SUM(cost_usd), 0)
-            FROM usage_events {where}
-            GROUP BY provider""",
+    for prov, calls, naive, sent, cost in _query(
+        conn,
+        """SELECT COALESCE(provider, 'n/a'),
+                  COUNT(*),
+                  COALESCE(SUM(naive_tokens), 0),
+                  COALESCE(SUM(sent_tokens), 0),
+                  COALESCE(SUM(cost_usd), 0)
+           FROM usage_events
+           GROUP BY provider""",
+        """SELECT COALESCE(provider, 'n/a'),
+                  COUNT(*),
+                  COALESCE(SUM(naive_tokens), 0),
+                  COALESCE(SUM(sent_tokens), 0),
+                  COALESCE(SUM(cost_usd), 0)
+           FROM usage_events WHERE ts >= ?
+           GROUP BY provider""",
         params,
     ).fetchall():
         by_provider[prov] = {
@@ -154,12 +175,18 @@ def summarize_stats(since: Optional[float] = None) -> StatsSummary:
         }
 
     by_kind = {}
-    for kind, calls, naive, sent in conn.execute(
-        f"""SELECT kind, COUNT(*),
-                   COALESCE(SUM(naive_tokens), 0),
-                   COALESCE(SUM(sent_tokens), 0)
-            FROM usage_events {where}
-            GROUP BY kind""",
+    for kind, calls, naive, sent in _query(
+        conn,
+        """SELECT kind, COUNT(*),
+                  COALESCE(SUM(naive_tokens), 0),
+                  COALESCE(SUM(sent_tokens), 0)
+           FROM usage_events
+           GROUP BY kind""",
+        """SELECT kind, COUNT(*),
+                  COALESCE(SUM(naive_tokens), 0),
+                  COALESCE(SUM(sent_tokens), 0)
+           FROM usage_events WHERE ts >= ?
+           GROUP BY kind""",
         params,
     ).fetchall():
         by_kind[kind] = {
