@@ -13,6 +13,16 @@ from typing import List
 
 # (regex, label) pairs. Order matters: first match wins.
 _TASK_RULES = [
+    (
+        r"\b(write|create|add|build|implement|refactor|fix|debug|patch|update)\b.*\b"
+        r"(code|function|bug|class|script|module|helper|component|service|api|endpoint|client|cli|auth|parser|test|tests?)\b",
+        "code",
+    ),
+    (
+        r"\b(test|tests?|pytest|unittest|spec)\b.*\b"
+        r"(module|code|function|class|script|api|endpoint|client|auth|cli|helper|parser|service)\b",
+        "code",
+    ),
     (r"\b(write|implement|refactor|fix|debug|patch)\b.*\b(code|function|bug|class|script)\b", "code"),
     (r"\b(security|vulnerab|exploit|cve|owasp|injection)\b", "security"),
     (r"\b(prove|derive|theorem|lemma|integrate|differentiate|solve)\b", "reasoning"),
@@ -24,7 +34,11 @@ _TASK_RULES = [
 
 _DOMAIN_RULES = [
     (r"\b(stock|bond|yield|coupon|duration|convexity|portfolio|equity|finance|nav|cagr)\b", "finance"),
-    (r"\b(python|javascript|typescript|react|sql|api|docker|kubernetes|git|regex)\b", "software"),
+    (
+        r"\b(python|javascript|typescript|react|sql|api|docker|kubernetes|git|regex|"
+        r"stack|repo|module|package|script|helper|cli|auth|client|endpoint|test|tests?|pytest|unittest)\b",
+        "software",
+    ),
     (r"\b(neural|ml|model|training|gradient|tensor|pytorch|llm|transformer)\b", "ml"),
     (r"\b(law|legal|contract|gdpr|hipaa|compliance)\b", "legal"),
     (r"\b(medical|disease|symptom|diagnosis|drug|clinical)\b", "medical"),

@@ -109,3 +109,31 @@ def test_mycelium_integration(tmp_path):
 
     # Should find memories through mycelium spread
     assert len(built.used_memories) >= 1
+
+
+def test_untrusted_context_is_not_system_role(tmp_path):
+    mem_store, conv_store, cfg = _setup(tmp_path)
+    mem_store.add(Memory(content="Prefer pytest", domain="software", task="code", concepts=["pytest"], importance=0.9))
+    for i in range(8):
+        conv_store.add(Message(session_id="default", role="user", content=f"Earlier question {i}"))
+        conv_store.add(Message(session_id="default", role="assistant", content=f"Earlier answer {i}"))
+    wm = WorkingMemory(capacity=10)
+    wm.put("current_file", "auth.py")
+
+    classification = classify("Write tests for auth.py")
+    built = build_context(
+        query="Write tests for auth.py",
+        classification=classification,
+        cfg=cfg,
+        mem_store=mem_store,
+        conv_store=conv_store,
+        working_memory=wm,
+    )
+
+    system_contents = [m["content"] for m in built.messages if m["role"] == "system"]
+    user_contents = [m["content"] for m in built.messages if m["role"] == "user"]
+
+    assert any("Coding mode:" in text for text in system_contents)
+    assert any("Memory notes" in text for text in user_contents)
+    assert any("Working memory" in text for text in user_contents)
+    assert any("Conversation summary" in text for text in user_contents)

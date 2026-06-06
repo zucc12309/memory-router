@@ -5,6 +5,7 @@ import stat
 
 from memory_router import config as cfg_mod
 from memory_router.memory.sqlite_store import MemoryStore
+from memory_router.security import keychain as keychain_mod
 
 
 def _patch_root(monkeypatch, root):
@@ -34,3 +35,16 @@ def test_sqlite_files_are_locked_down(tmp_path, monkeypatch):
     MemoryStore(path=root / "memories.sqlite")
 
     assert stat.S_IMODE(os.stat(root / "memories.sqlite").st_mode) & 0o077 == 0
+
+
+def test_secret_files_are_locked_down(tmp_path, monkeypatch):
+    root = tmp_path / "memory-router"
+    _patch_root(monkeypatch, root)
+    monkeypatch.setattr(keychain_mod, "_FALLBACK_FILE", root / ".secrets.json")
+    monkeypatch.setattr(keychain_mod, "_HMAC_FILE", root / ".secrets.hmac")
+    monkeypatch.setattr(keychain_mod, "_try_keyring", lambda: None)
+
+    keychain_mod.set_secret("openai", "sk-test")
+
+    assert stat.S_IMODE(os.stat(root / ".secrets.json").st_mode) & 0o077 == 0
+    assert stat.S_IMODE(os.stat(root / ".secrets.hmac").st_mode) & 0o077 == 0

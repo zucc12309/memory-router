@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+from rich import box
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
@@ -64,6 +65,156 @@ console = Console()
 
 
 # ---------- helpers ----------
+
+def _truncate_text(text: str, limit: int = 88) -> str:
+    """Compact a long string for one-line summaries."""
+    clean = " ".join((text or "").split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _memory_preview(mem: Memory, content_limit: int = 88) -> str:
+    """Render a short human-readable description of a memory row."""
+    parts = [f"{mem.domain}/{mem.task}"]
+    if mem.memory_type:
+        parts.append(f"({mem.memory_type})")
+    if mem.concepts:
+        concepts = ", ".join(mem.concepts[:2])
+        if len(mem.concepts) > 2:
+            concepts += ", ..."
+        parts.append(f"[{concepts}]")
+    if mem.content:
+        parts.append(f"- {_truncate_text(mem.content, content_limit)}")
+    return " ".join(parts)
+
+
+def _memory_summary(used_memories) -> str:
+    """Summarize the retrieved memories without dumping the whole list."""
+    if not used_memories:
+        return "none"
+    top = used_memories[0]
+    parts = [f"{top.domain}/{top.task}"]
+    if top.memory_type:
+        parts.append(f"({top.memory_type})")
+    if top.concepts:
+        concepts = ", ".join(top.concepts[:2])
+        if len(top.concepts) > 2:
+            concepts += ", ..."
+        parts.append(f"[{concepts}]")
+    top_label = " ".join(parts)
+    if len(used_memories) == 1:
+        return f"1 memory used: {top_label}"
+    return f"{len(used_memories)} memories used: {top_label} (+{len(used_memories) - 1} more)"
+
+
+def _summary_grid(rows: list[tuple[str, str]]) -> Table:
+    """Build a compact key/value grid for status cards."""
+    grid = Table.grid(padding=(0, 1), expand=True)
+    grid.add_column(style="bold cyan", no_wrap=True)
+    grid.add_column(style="white")
+    for label, value in rows:
+        grid.add_row(label, value)
+    return grid
+
+
+def _summary_panel(
+    title: str,
+    rows: list[tuple[str, str]],
+    border_style: str = "cyan",
+    subtitle: Optional[str] = None,
+) -> Panel:
+    """Wrap a summary grid in a rounded panel."""
+    return Panel(
+        _summary_grid(rows),
+        title=title,
+        subtitle=subtitle,
+        border_style=border_style,
+        box=box.ROUNDED,
+        padding=(1, 2),
+    )
+
+
+def _message_border_style(role: str) -> str:
+    """Use distinct colors for system/user/assistant message cards."""
+    return {
+        "system": "blue",
+        "user": "green",
+        "assistant": "magenta",
+    }.get(role, "cyan")
+
+
+def _render_message_panel(message: dict, index: int) -> Panel:
+    """Render one role-tagged message panel for build-context output."""
+    role = message.get("role", "message")
+    content = message.get("content", "")
+    return Panel(
+        content,
+        title=f"{role.title()} #{index}",
+        border_style=_message_border_style(role),
+        box=box.ROUNDED,
+        padding=(1, 2),
+    )
+
+
+def _memory_table(memories, title: str = "Relevant memories") -> Table:
+    """Render retrieved memories in a readable table."""
+    table = Table(
+        title=title,
+        box=box.ROUNDED,
+        header_style="bold cyan",
+        show_lines=False,
+        row_styles=["none", "dim"],
+    )
+    table.add_column("#", style="dim", justify="right", no_wrap=True)
+    table.add_column("Domain / Task", style="cyan", no_wrap=True)
+    table.add_column("Type", style="magenta", no_wrap=True)
+    table.add_column("Imp.", justify="right", no_wrap=True)
+    table.add_column("Conf.", justify="right", no_wrap=True)
+    table.add_column("Uses", justify="right", no_wrap=True)
+    table.add_column("Content", overflow="fold")
+    for idx, m in enumerate(memories, 1):
+        concepts = ""
+        if m.concepts:
+            concepts = " [" + ", ".join(m.concepts[:2])
+            if len(m.concepts) > 2:
+                concepts += ", ..."
+            concepts += "]"
+        table.add_row(
+            str(idx),
+            f"{m.domain}/{m.task}{concepts}",
+            m.memory_type,
+            f"{m.importance:.2f}",
+            f"{m.confidence:.2f}",
+            str(m.usage_count),
+            _truncate_text(m.content, 120),
+        )
+    return table
+
+
+def _mode_guide_panel() -> Panel:
+    """Explain the available setup modes without changing the flow."""
+    table = Table.grid(padding=(0, 1), expand=True)
+    table.add_column(style="bold cyan", no_wrap=True)
+    table.add_column(style="white")
+    table.add_row("local", "Ollama only. Best for fully offline use and private workflows.")
+    table.add_row("api", "Cloud providers only. Best when you already have keys and want remote models.")
+    table.add_row("hybrid", "Local first, cloud fallback when needed. Best overall balance.")
+    table.add_row("ruflo", "Agentic routing path for advanced workflows.")
+    return Panel(
+        table,
+        title="Mode guide",
+        border_style="cyan",
+        box=box.ROUNDED,
+        padding=(1, 2),
+    )
+
+
+def _format_saved_pct(pct: int) -> str:
+    """Color the savings line without changing the underlying value."""
+    style = "green" if pct > 0 else "yellow"
+    return f"[{style}]{pct}%[/{style}]"
+
 
 def _require_init() -> Config:
     if not is_initialized():
@@ -150,17 +301,13 @@ def _explain_provider_error(provider_name: str, model: str, err: Exception) -> N
 
 
 def _print_routing_header(provider_name: str, model: str, reason: str, used_memories, est_saved_pct: int):
-    if used_memories:
-        m = used_memories[0]
-        memory_path = f"{m.task.title()} > {m.domain.title()}"
-        if m.concepts:
-            memory_path += " > " + ", ".join(m.concepts[:2])
-    else:
-        memory_path = "(none)"
-    console.print(f"[bold]Using:[/bold] {provider_name} / {model}")
-    console.print(f"[bold]Route:[/bold] {reason}")
-    console.print(f"[bold]Memory used:[/bold] {memory_path}")
-    console.print(f"[bold]Estimated tokens saved:[/bold] {est_saved_pct}%")
+    rows = [
+        ("Provider", f"{provider_name} / {model}"),
+        ("Route", reason),
+        ("Memory", _memory_summary(used_memories)),
+        ("Estimated saved", _format_saved_pct(est_saved_pct)),
+    ]
+    console.print(_summary_panel("Request summary", rows, border_style="cyan"))
     console.print()
 
 
@@ -250,20 +397,27 @@ def _ask(query: str, no_memory: bool, local: bool, session: str,
     saved = percent_saved(built.full_history_tokens, built.sent_tokens)
     _print_routing_header(decision.provider.name, decision.model, decision.reason, built.used_memories, saved)
     if cfg.mode == "hybrid" and decision.provider.name != "ollama":
-        console.print("[yellow]Note: this prompt will be sent to a remote provider.[/yellow]")
+        console.print(Panel(
+            "This prompt will be sent to a remote provider.",
+            title="Hybrid routing note",
+            border_style="yellow",
+            box=box.ROUNDED,
+        ))
 
     # Stage 3: provider call with fallback.
     t0 = time.time()
     actual_provider = decision.provider.name
 
     if stream:
-        result_text, real_in, real_out = _stream_response(decision, built, router)
+        result_text, real_in, real_out, actual_provider, actual_model = _stream_response(decision, built, router)
     else:
         try:
             if hasattr(router, "complete_with_fallback"):
-                result, actual_provider = router.complete_with_fallback(decision, built.messages)
+                result, actual_provider, actual_model = router.complete_with_fallback(decision, built.messages)
             else:
                 result = decision.provider.complete(decision.model, built.messages)
+                actual_provider = decision.provider.name
+                actual_model = decision.model
             result_text = result.text or "[no response]"
             real_in = result.input_tokens or built.sent_tokens
             real_out = result.output_tokens or 0
@@ -280,24 +434,23 @@ def _ask(query: str, no_memory: bool, local: bool, session: str,
     latency_ms = int((time.time() - t0) * 1000)
 
     if not stream:
-        console.print(Panel(result_text, title="Answer", border_style="green"))
+        console.print(Panel(result_text, title="Answer", border_style="green", box=box.ROUNDED, padding=(1, 2)))
 
     naive_in = built.full_history_tokens or built.sent_tokens
     real_saved = percent_saved(naive_in, real_in)
-    cost = estimate_cost_usd(decision.model, real_in, real_out)
+    cost = estimate_cost_usd(actual_model, real_in, real_out)
 
-    token_table = Table.grid(padding=(0, 2))
-    token_table.add_column(style="cyan", justify="right")
-    token_table.add_column()
-    token_table.add_row("Input tokens (real):", f"{real_in:,}")
-    token_table.add_row("Output tokens (real):", f"{real_out:,}")
-    token_table.add_row("Naive baseline (est.):", f"~{naive_in:,}")
-    token_table.add_row("Saved on input:", f"{real_saved}%")
-    token_table.add_row("Latency:", f"{latency_ms:,}ms")
-    token_table.add_row("Cost (estimate):", format_cost(cost))
+    token_rows = [
+        ("Input tokens", f"{real_in:,}"),
+        ("Output tokens", f"{real_out:,}"),
+        ("Naive baseline", f"~{naive_in:,}"),
+        ("Saved on input", _format_saved_pct(real_saved)),
+        ("Latency", f"{latency_ms:,} ms"),
+        ("Cost estimate", format_cost(cost)),
+    ]
     if actual_provider != decision.provider.name:
-        token_table.add_row("Fallback used:", f"{actual_provider}")
-    console.print(Panel(token_table, title="Token usage", border_style="dim"))
+        token_rows.append(("Fallback used", actual_provider))
+    console.print(_summary_panel("Token usage", token_rows, border_style="green" if real_saved > 0 else "dim"))
 
     record_usage(
         kind="cli_ask",
@@ -306,13 +459,15 @@ def _ask(query: str, no_memory: bool, local: bool, session: str,
         output_tokens=real_out,
         memories_used=len(built.used_memories),
         provider=actual_provider,
-        model=decision.model,
+        model=actual_model,
         cost_usd=cost,
     )
 
     # Record for adaptive routing
     _record_adaptive_outcome(cfg, router, decision, classification,
-                             real_in, real_out, latency_ms, cost, None)
+                             real_in, real_out, latency_ms, cost, None,
+                             actual_provider=actual_provider,
+                             actual_model=actual_model)
 
     # Auto-capture
     try:
@@ -355,20 +510,45 @@ def _stream_response(decision, built, router):
         console.print("\n[yellow]Cancelled.[/yellow]")
         raise typer.Exit(code=130)
     except Exception:
-        # Fall back to non-streaming
-        result = decision.provider.complete(decision.model, built.messages)
-        console.print(result.text or "[no response]")
-        return result.text or "[no response]", result.input_tokens or built.sent_tokens, result.output_tokens or 0
+        # Fall back to non-streaming, including router-level provider fallback.
+        if hasattr(router, "complete_with_fallback"):
+            result, actual_provider, actual_model = router.complete_with_fallback(
+                decision, built.messages
+            )
+        else:
+            result = decision.provider.complete(decision.model, built.messages)
+            actual_provider = decision.provider.name
+            actual_model = decision.model
+        text = result.text or "[no response]"
+        console.print(text)
+        return (
+            text,
+            result.input_tokens or built.sent_tokens,
+            result.output_tokens or 0,
+            actual_provider,
+            actual_model,
+        )
 
     console.print()  # newline after stream
     combined = "".join(full_text)
     if not real_in:
         real_in = built.sent_tokens
-    return combined, real_in, real_out
+    return combined, real_in, real_out, decision.provider.name, decision.model
 
 
-def _record_adaptive_outcome(cfg, router, decision, classification,
-                              input_tokens, output_tokens, latency_ms, cost, error):
+def _record_adaptive_outcome(
+    cfg,
+    router,
+    decision,
+    classification,
+    input_tokens,
+    output_tokens,
+    latency_ms,
+    cost,
+    error,
+    actual_provider: Optional[str] = None,
+    actual_model: Optional[str] = None,
+):
     """Record outcome for adaptive routing if enabled."""
     if not cfg.adaptive_routing:
         return
@@ -378,8 +558,8 @@ def _record_adaptive_outcome(cfg, router, decision, classification,
             # Estimate quality from auto-capture success
             quality = 0.7 if error is None else 0.1
             router.record_outcome(RouteOutcome(
-                provider=decision.provider.name,
-                model=decision.model,
+                provider=actual_provider or decision.provider.name,
+                model=actual_model or decision.model,
                 task=classification.task,
                 domain=classification.domain,
                 complexity=classification.complexity,
@@ -434,27 +614,28 @@ def build_context_cmd(
         ))
         raise typer.Exit(code=2)
 
-    if built.used_memories:
-        console.print("[bold cyan]Relevant memory used:[/bold cyan]")
-        for m in built.used_memories:
-            console.print(f"- [{m.domain}/{m.task}] {m.content}")
-    else:
-        console.print("[dim]Relevant memory used: (none)[/dim]")
-    console.print()
-
     saved = percent_saved(built.full_history_tokens, built.sent_tokens)
-    console.print(
-        f"[dim]task={classification.task}  domain={classification.domain}  "
-        f"concepts={classification.concepts}  tokens_sent≈{built.sent_tokens}  "
-        f"saved≈{saved}%[/dim]"
-    )
+    summary_rows = [
+        ("Classification", f"{classification.task} / {classification.domain}"),
+        ("Concepts", ", ".join(classification.concepts) if classification.concepts else "none"),
+        ("Memory", _memory_summary(built.used_memories)),
+        ("Tokens", f"sent ~{built.sent_tokens:,}  baseline ~{built.full_history_tokens:,}  saved {_format_saved_pct(saved)}"),
+    ]
+    console.print(_summary_panel("Context summary", summary_rows, border_style="cyan"))
     console.print()
 
     if show_messages:
         console.print("[bold green]Optimized messages:[/bold green]")
-        for m in built.messages:
-            console.print(Panel(m["content"], title=m["role"], border_style="green"))
+        for i, m in enumerate(built.messages, 1):
+            console.print(_render_message_panel(m, i))
         return
+
+    if built.used_memories:
+        console.print(_memory_table(built.used_memories, title="Relevant memories"))
+        console.print()
+    else:
+        console.print("[dim]Relevant memory used: (none)[/dim]")
+        console.print()
 
     optimized_prompt = _render_flat_prompt(built.messages)
     console.print("[bold green]Optimized prompt:[/bold green]")
@@ -467,8 +648,13 @@ def build_context_cmd(
 def init():
     """Interactive first-time setup."""
     ensure_dirs()
-    console.print(Panel.fit("[bold]Memory Router setup[/bold]\nEverything is stored locally under "
-                            f"{ROOT_DIR}", border_style="cyan"))
+    console.print(Panel.fit(
+        "[bold]Memory Router setup[/bold]\n"
+        "Everything is stored locally under " f"{ROOT_DIR}",
+        border_style="cyan",
+        box=box.ROUNDED,
+    ))
+    console.print(_mode_guide_panel())
 
     mode = Prompt.ask(
         "Choose mode",
@@ -509,8 +695,18 @@ def init():
     cfg.memory_decay_enabled = Confirm.ask("Enable memory decay (stale memories auto-fade)?", default=True)
 
     save_config(cfg)
+    summary_rows = [
+        ("Mode", cfg.mode),
+        ("Memory Palace", "enabled" if cfg.memory_enabled else "disabled"),
+        ("Auto capture", "enabled" if cfg.auto_capture_memories else "disabled"),
+        ("Mycelium", "enabled" if cfg.mycelium_enabled else "disabled"),
+        ("Decay", "enabled" if cfg.memory_decay_enabled else "disabled"),
+    ]
+    if mode in ("local", "hybrid"):
+        summary_rows.append(("Ollama host", cfg.ollama_host))
+    console.print(_summary_panel("Setup complete", summary_rows, border_style="green"))
     console.print(f"[green]Wrote config to {CONFIG_PATH}.[/green]")
-    console.print("Try: [bold]memory-router \"Explain bond convexity\"[/bold]")
+    console.print("Next: [bold]memory-router \"Explain bond convexity\"[/bold]")
 
 
 # ---------- auth ----------
@@ -537,6 +733,10 @@ def config_show():
     """Print the current config."""
     cfg = _require_init()
     table = Table(title="Memory Router Config", show_lines=False)
+    table.box = box.ROUNDED
+    table.header_style = "bold cyan"
+    table.title_style = "bold cyan"
+    table.row_styles = ["none", "dim"]
     table.add_column("Key", style="cyan")
     table.add_column("Value", style="white")
     for k, v in cfg.to_dict().items():
@@ -565,85 +765,51 @@ def config_set(
 def doctor():
     """Run a self-check: config, storage, providers, and v2 subsystems."""
     table = Table(title="Memory Router Doctor", show_lines=False)
+    table.box = box.ROUNDED
+    table.header_style = "bold cyan"
+    table.title_style = "bold cyan"
+    table.row_styles = ["none", "dim"]
     table.add_column("Check", style="cyan")
     table.add_column("Status")
     table.add_column("Detail", style="dim")
 
     if is_initialized():
-        table.add_row("config file", "[green]ok[/green]", str(CONFIG_PATH))
         cfg = load_config()
     else:
+        from .health import check_health
+
+        report = check_health()
         table.add_row("config file", "[red]missing[/red]", "Run: memory-router init")
+        for check in report.checks[1:]:
+            status_style = {
+                "ok": "[green]ok[/green]",
+                "warn": "[yellow]warn[/yellow]",
+                "error": "[red]error[/red]",
+            }.get(check.status, check.status)
+            table.add_row(check.name, status_style, check.detail)
         console.print(table)
         raise typer.Exit(code=1)
 
-    # Storage dirs + DBs
-    try:
-        ensure_dirs()
-        ms = MemoryStore()
-        cs = ConversationStore()
-        n_mem = ms.count()
-        n_msg = cs.session_count("default")
-        table.add_row("memory palace db", "[green]ok[/green]", f"{n_mem} memories")
-        table.add_row("conversations db", "[green]ok[/green]", f"{n_msg} messages in default session")
-    except Exception as e:
-        table.add_row("storage", "[red]error[/red]", str(e))
+    overview_rows = [
+        ("Mode", cfg.mode),
+        ("Memory Palace", "on" if cfg.memory_enabled else "off"),
+        ("Auto capture", "on" if cfg.auto_capture_memories else "off"),
+        ("Mycelium", "on" if cfg.mycelium_enabled else "off"),
+        ("Decay", "on" if cfg.memory_decay_enabled else "off"),
+        ("Adaptive routing", "on" if cfg.adaptive_routing else "off"),
+    ]
+    console.print(_summary_panel("Overview", overview_rows, border_style="cyan"))
+    console.print()
+    from .health import check_health
+    report = check_health()
+    for check in report.checks:
+        status_style = {
+            "ok": "[green]ok[/green]",
+            "warn": "[yellow]warn[/yellow]",
+            "error": "[red]error[/red]",
+        }.get(check.status, check.status)
+        table.add_row(check.name, status_style, check.detail)
 
-    # Providers
-    try:
-        router = Router(cfg)
-        for name, p in router.providers.items():
-            try:
-                ok = p.is_available()
-            except Exception:
-                ok = False
-            detail = "ready" if ok else "not configured / unavailable"
-            table.add_row(f"provider:{name}", "[green]ok[/green]" if ok else "[yellow]–[/yellow]", detail)
-    except Exception as e:
-        table.add_row("router", "[red]error[/red]", str(e))
-
-    # Mode + core config
-    table.add_row("mode", "[green]ok[/green]", cfg.mode)
-    table.add_row("memory_enabled", "[green]ok[/green]" if cfg.memory_enabled else "[yellow]off[/yellow]", str(cfg.memory_enabled))
-    table.add_row("auto_capture", "[green]ok[/green]" if cfg.auto_capture_memories else "[yellow]off[/yellow]", str(cfg.auto_capture_memories))
-
-    # v2 subsystems
-    table.add_row("mycelium_network", "[green]on[/green]" if cfg.mycelium_enabled else "[yellow]off[/yellow]",
-                  "associative memory graph" if cfg.mycelium_enabled else "disabled")
-    table.add_row("memory_decay", "[green]on[/green]" if cfg.memory_decay_enabled else "[yellow]off[/yellow]",
-                  "confidence decay enabled" if cfg.memory_decay_enabled else "disabled")
-    table.add_row("adaptive_routing", "[green]on[/green]" if cfg.adaptive_routing else "[yellow]off[/yellow]",
-                  "outcome-learning router" if cfg.adaptive_routing else "rule-based")
-
-    # FTS5 check
-    try:
-        ms = MemoryStore()
-        if ms._fts_available:
-            table.add_row("fts5_search", "[green]ok[/green]", "full-text search active")
-        else:
-            table.add_row("fts5_search", "[yellow]–[/yellow]", "FTS5 not available in this SQLite build")
-    except Exception:
-        table.add_row("fts5_search", "[yellow]–[/yellow]", "could not check")
-
-    # Tiktoken check
-    try:
-        import tiktoken  # noqa: F401
-        table.add_row("tiktoken", "[green]ok[/green]", "precise token counting active")
-    except ImportError:
-        table.add_row("tiktoken", "[yellow]–[/yellow]", "using heuristic (pip install tiktoken)")
-
-    # Encryption check
-    try:
-        from .security.encryption import is_encryption_available
-        if is_encryption_available():
-            table.add_row("encryption", "[green]ok[/green]" if cfg.encryption_enabled else "[yellow]available[/yellow]",
-                          "AES-256-GCM ready" + ("" if cfg.encryption_enabled else " (enable: config set encryption_enabled true)"))
-        else:
-            table.add_row("encryption", "[yellow]–[/yellow]", "pip install cryptography")
-    except Exception:
-        table.add_row("encryption", "[yellow]–[/yellow]", "could not check")
-
-    # Mycelium stats
     if cfg.mycelium_enabled:
         try:
             ms = MemoryStore()
@@ -651,17 +817,6 @@ def doctor():
             if mycelium:
                 stats = mycelium.stats()
                 table.add_row("mycelium_edges", "[green]ok[/green]", f"{stats['edge_count']} edges, avg weight {stats['avg_weight']}")
-        except Exception:
-            pass
-
-    # Memory decay stats
-    if cfg.memory_decay_enabled:
-        try:
-            ms = MemoryStore()
-            from .memory.decay import get_decay_stats
-            ds = get_decay_stats(ms)
-            table.add_row("memory_health", "[green]ok[/green]",
-                          f"{ds['strong_count']} strong, {ds['stale_count']} stale, avg importance {ds['avg_importance']:.2f}")
         except Exception:
             pass
 
@@ -679,7 +834,27 @@ def _format_delta(delta: Optional[float]) -> str:
     return f"{delta:+.2f}"
 
 def _render_benchmark_report(report: BenchmarkSummary) -> None:
+    summary_rows = [
+        ("Cases", f"{len(report.cases):,}"),
+        ("Avg raw tokens", f"{report.raw_tokens_avg:.0f}"),
+        ("Avg baseline", f"{report.baseline_tokens_avg:.0f}"),
+        ("Avg optimized", f"{report.optimized_tokens_avg:.0f}"),
+        ("Avg saved", f"{report.raw_saved_pct_avg:.1f}%"),
+    ]
+    if report.baseline_score_avg is not None and report.optimized_score_avg is not None:
+        summary_rows.extend([
+            ("Avg score baseline", f"{report.baseline_score_avg:.2f}"),
+            ("Avg score optimized", f"{report.optimized_score_avg:.2f}"),
+            ("Avg delta", f"{report.quality_delta_avg:.2f}"),
+        ])
+    console.print(_summary_panel("Benchmark summary", summary_rows, border_style="cyan"))
+    console.print()
+
     table = Table(title="Memory Router Benchmark", show_lines=False)
+    table.box = box.ROUNDED
+    table.header_style = "bold cyan"
+    table.title_style = "bold cyan"
+    table.row_styles = ["none", "dim"]
     table.add_column("Case", style="cyan")
     table.add_column("Raw", justify="right")
     table.add_column("Baseline", justify="right")
@@ -707,20 +882,6 @@ def _render_benchmark_report(report: BenchmarkSummary) -> None:
         )
 
     console.print(table)
-
-    summary = [
-        f"avg raw≈{report.raw_tokens_avg:.0f}",
-        f"avg baseline≈{report.baseline_tokens_avg:.0f}",
-        f"avg optimized≈{report.optimized_tokens_avg:.0f}",
-        f"avg saved≈{report.raw_saved_pct_avg:.1f}%",
-    ]
-    if report.baseline_score_avg is not None and report.optimized_score_avg is not None:
-        summary.extend([
-            f"avg score baseline≈{report.baseline_score_avg:.2f}",
-            f"avg score optimized≈{report.optimized_score_avg:.2f}",
-            f"avg delta≈{report.quality_delta_avg:.2f}",
-        ])
-    console.print("[bold]Summary:[/bold] " + "  ".join(summary))
     if report.note:
         console.print(f"[yellow]{report.note}[/yellow]")
 
@@ -806,7 +967,7 @@ def stats(
     headline.add_row("Output tokens received:", f"{s.output_tokens:,}")
     headline.add_row("Memories injected:", f"{s.memories_used:,}")
     headline.add_row("Estimated cost (real):", format_cost(s.cost_usd))
-    console.print(Panel(headline, title="Memory Router — Cumulative Savings", border_style="green"))
+    console.print(Panel(headline, title="Memory Router: Cumulative Savings", border_style="green", box=box.ROUNDED))
 
     if s.by_provider:
         prov_table = Table(title="By provider", show_header=True, show_lines=False)
@@ -847,15 +1008,7 @@ def memory_list(
     if not mems:
         console.print("[yellow]No memories yet. Add one with `memory-router memory add ...`[/yellow]")
         return
-    table = Table(title="Memories")
-    for col in ("id", "domain", "task", "type", "imp.", "conf.", "uses", "content"):
-        table.add_column(col)
-    for m in mems:
-        content = m.content if len(m.content) < 70 else m.content[:67] + "..."
-        table.add_row(str(m.id), m.domain, m.task, m.memory_type,
-                      f"{m.importance:.2f}", f"{m.confidence:.2f}",
-                      str(m.usage_count), content)
-    console.print(table)
+    console.print(_memory_table(mems, title="Memories"))
 
 
 @memory_app.command("palace")
@@ -867,7 +1020,7 @@ def memory_palace():
     if not nodes:
         console.print("[yellow]Memory Palace is empty.[/yellow]")
         return
-    tree = Tree("[bold]Memory Palace[/bold]")
+    tree = Tree("[bold cyan]Memory Palace[/bold cyan]", guide_style="dim")
     for node in nodes:
         domain_branch = tree.add(f"[cyan]{node.domain}[/cyan]")
         for task_name, mems in node.tasks.items():
@@ -943,8 +1096,7 @@ def memory_search(
     if not mems:
         console.print("[yellow]No matching memories found.[/yellow]")
         return
-    for m in mems:
-        console.print(f"  [cyan]#{m.id}[/cyan] [{m.domain}/{m.task}] (imp={m.importance:.2f}, conf={m.confidence:.2f}) {m.content}")
+    console.print(_memory_table(mems, title=f"Search results for {_truncate_text(query, 48)}"))
 
 
 @memory_app.command("decay")
@@ -1013,14 +1165,13 @@ def memory_network():
         return
 
     stats = mycelium.stats()
-    table = Table.grid(padding=(0, 2))
-    table.add_column(style="cyan", justify="right")
-    table.add_column()
-    table.add_row("Edges:", f"{stats['edge_count']:,}")
-    table.add_row("Avg weight:", f"{stats['avg_weight']:.3f}")
-    table.add_row("Max weight:", f"{stats['max_weight']:.3f}")
-    table.add_row("Connected nodes:", f"{stats['connected_nodes']:,}")
-    console.print(Panel(table, title="Mycelium Network", border_style="cyan"))
+    rows = [
+        ("Edges", f"{stats['edge_count']:,}"),
+        ("Avg weight", f"{stats['avg_weight']:.3f}"),
+        ("Max weight", f"{stats['max_weight']:.3f}"),
+        ("Connected nodes", f"{stats['connected_nodes']:,}"),
+    ]
+    console.print(_summary_panel("Mycelium Network", rows, border_style="cyan"))
 
 
 @memory_app.command("consolidate")
@@ -1040,14 +1191,13 @@ def memory_consolidate(
         return
 
     mode = "[yellow]DRY RUN[/yellow]" if dry_run else "[green]APPLIED[/green]"
-    console.print(f"\n{mode} — Consolidation results:")
-    table = Table.grid(padding=(0, 2))
-    table.add_column(style="cyan", justify="right")
-    table.add_column()
-    table.add_row("Clusters found:", str(result.clusters_found))
-    table.add_row("Memories merged:", str(result.memories_merged))
-    table.add_row("Memories remaining:", str(result.memories_remaining))
-    console.print(Panel(table, title="Memory Consolidation", border_style="cyan"))
+    console.print(f"\n{mode} - Consolidation results:")
+    rows = [
+        ("Clusters found", str(result.clusters_found)),
+        ("Memories merged", str(result.memories_merged)),
+        ("Memories remaining", str(result.memories_remaining)),
+    ]
+    console.print(_summary_panel("Memory Consolidation", rows, border_style="cyan"))
 
     if dry_run:
         console.print("\n[dim]Run with --apply to merge duplicates.[/dim]")
@@ -1067,14 +1217,7 @@ def memory_similar(
         console.print("[yellow]No similar memories found.[/yellow]")
         return
 
-    table = Table(title=f"Similar Memories (threshold={threshold})", show_lines=False)
-    table.add_column("ID", style="dim", justify="right")
-    table.add_column("Content")
-    table.add_column("Importance", justify="right")
-
-    for m in similar:
-        table.add_row(str(m.id), m.content[:80], f"{m.importance:.2f}")
-    console.print(table)
+    console.print(_memory_table(similar, title=f"Similar memories (threshold={threshold})"))
 
 
 # ---------- routing report ----------
@@ -1109,6 +1252,9 @@ def routing_report(
         return
 
     table = Table(title="Adaptive Routing Report", show_lines=False)
+    table.box = box.ROUNDED
+    table.header_style = "bold cyan"
+    table.row_styles = ["none", "dim"]
     table.add_column("Provider", style="cyan")
     table.add_column("Model")
     table.add_column("Quality", justify="right")

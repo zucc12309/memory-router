@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import stat
 import time
@@ -27,6 +28,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from ..config import CONVERSATIONS_DB, MEMORIES_DB, ensure_dirs
+from ..utils.fs import ensure_secure_file
 
 
 # ---------- data classes ----------
@@ -112,6 +114,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 
 def _connect(path: Path, schema: str) -> sqlite3.Connection:
     ensure_dirs()
+    ensure_secure_file(path)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(schema)
@@ -354,40 +357,23 @@ class MemoryStore:
 
         scored = []
         concepts_lower = [c.lower() for c in (concepts or [])]
+        query_terms = _tokenize_terms(query_text) if query_text else set()
 
         for r in rows:
             mem = _row_to_memory(r)
-
-            # Filter by type and confidence
-            if memory_type and mem.memory_type != memory_type:
+            score = _score_search_candidate(
+                mem,
+                task=task,
+                domain=domain,
+                concepts_lower=concepts_lower,
+                query_terms=query_terms,
+                query_text=query_text,
+                fts_ids=fts_ids,
+                memory_type=memory_type,
+                min_confidence=min_confidence,
+            )
+            if score is None:
                 continue
-            if mem.confidence < min_confidence:
-                continue
-
-            score = mem.importance * mem.confidence
-            if task and mem.task == task:
-                score += 0.5
-            if domain and mem.domain == domain:
-                score += 0.5
-            mem_concepts = [c.lower() for c in mem.concepts]
-            overlap = len(set(mem_concepts) & set(concepts_lower))
-            score += 0.3 * overlap
-
-            # FTS match bonus
-            if mem.id in fts_ids:
-                score += 0.4
-
-            # Recency boost
-            if mem.last_used:
-                days_ago = (time.time() - mem.last_used) / 86400
-                if days_ago < 1:
-                    score += 0.2
-                elif days_ago < 7:
-                    score += 0.1
-
-            # Usage frequency bonus (capped)
-            score += min(0.15, mem.usage_count * 0.02)
-
             scored.append((score, mem))
 
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -441,6 +427,125 @@ def _row_to_memory(r: sqlite3.Row) -> Memory:
         last_used=r["last_used"],
         usage_count=r["usage_count"],
     )
+
+
+def _score_search_candidate(
+    mem: Memory,
+    *,
+    task: Optional[str],
+    domain: Optional[str],
+    concepts_lower: List[str],
+    query_terms: set[str],
+    query_text: Optional[str],
+    fts_ids: set[int],
+    memory_type: Optional[str],
+    min_confidence: float,
+) -> Optional[float]:
+    """Compute the relevance score for a single memory row."""
+    if memory_type and mem.memory_type != memory_type:
+        return None
+    if mem.confidence < min_confidence:
+        return None
+
+    score = mem.importance * mem.confidence
+    if task and mem.task == task:
+        score += 0.5
+    if domain and mem.domain == domain:
+        score += 0.5
+
+    mem_concepts = [c.lower() for c in mem.concepts]
+    overlap = len(set(mem_concepts) & set(concepts_lower))
+    score += 0.3 * overlap
+
+    if query_terms:
+        mem_terms = _tokenize_terms(" ".join([mem.content, " ".join(mem.concepts)]))
+        lexical_overlap = len(query_terms & mem_terms)
+        if lexical_overlap:
+            score += 0.25 * lexical_overlap
+
+        test_query = _looks_like_test_query(query_text) if query_text else False
+        stack_query = _looks_like_stack_query(query_text) if query_text else False
+        code_query = _looks_like_code_query(query_text) if query_text else False
+
+        if test_query and _looks_like_test_memory(mem):
+            score += 0.3
+        if stack_query and _looks_like_stack_memory(mem):
+            score += 0.3
+        if code_query and mem.domain == "software":
+            score += 0.1
+
+    if mem.id in fts_ids:
+        score += 0.4
+
+    if mem.last_used:
+        days_ago = (time.time() - mem.last_used) / 86400
+        if days_ago < 1:
+            score += 0.2
+        elif days_ago < 7:
+            score += 0.1
+
+    score += min(0.15, mem.usage_count * 0.02)
+    return score
+
+
+def _tokenize_terms(text: str) -> set[str]:
+    """Normalize a text blob into comparable search terms.
+
+    We keep this intentionally lightweight: lowercase tokens, a tiny plural
+    normalizer, and no external dependencies.
+    """
+    words = re.findall(r"[a-zA-Z][a-zA-Z0-9_\-']{2,}", (text or "").lower())
+    terms = set()
+    for word in words:
+        term = word.strip("'")
+        if len(term) > 5 and term.endswith("ing"):
+            term = term[:-3]
+            if len(term) > 3 and term[-1:] == term[-2:-1]:
+                term = term[:-1]
+        if len(term) > 4 and term.endswith("ies"):
+            term = term[:-3] + "y"
+        elif len(term) > 4 and term.endswith("uses"):
+            term = term[:-1]
+        elif len(term) > 4 and term.endswith(("ses", "xes", "zes", "ches", "shes", "oes")):
+            term = term[:-2]
+        elif len(term) > 4 and term.endswith("es"):
+            term = term[:-2]
+        elif len(term) > 3 and term.endswith("s") and not term.endswith(("ss", "us", "is")):
+            term = term[:-1]
+        terms.add(term)
+    return terms
+
+
+def _looks_like_test_query(text: str) -> bool:
+    terms = _tokenize_terms(text)
+    return bool(terms & {"test", "pytest", "unittest", "spec", "qa"})
+
+
+def _looks_like_stack_query(text: str) -> bool:
+    terms = _tokenize_terms(text)
+    return bool(terms & {"stack", "setup", "toolchain", "dependency", "dependencies", "version", "language", "environment"})
+
+
+def _looks_like_code_query(text: str) -> bool:
+    terms = _tokenize_terms(text)
+    return bool(terms & {
+        "code", "function", "module", "package", "script", "helper", "cli", "auth",
+        "client", "endpoint", "api", "project", "repo", "implementation", "refactor",
+        "bug", "fix", "debug", "patch", "test", "tests", "pytest",
+    })
+
+
+def _looks_like_test_memory(mem: Memory) -> bool:
+    terms = _tokenize_terms(" ".join([mem.content, " ".join(mem.concepts)]))
+    return bool(terms & {"test", "pytest", "unittest", "spec", "qa"})
+
+
+def _looks_like_stack_memory(mem: Memory) -> bool:
+    terms = _tokenize_terms(" ".join([mem.content, " ".join(mem.concepts)]))
+    return bool(terms & {
+        "typescript", "javascript", "python", "pnpm", "npm", "pip", "docker",
+        "react", "api", "cli", "stack", "framework", "language", "runtime",
+    })
 
 
 # ---------- conversation store ----------

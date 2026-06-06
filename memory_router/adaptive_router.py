@@ -154,7 +154,7 @@ class AdaptiveRouter:
                    COUNT(*) as sample_count,
                    SUM(CASE WHEN error IS NOT NULL THEN 1.0 ELSE 0.0 END) / COUNT(*) as error_rate
                FROM route_outcomes
-               WHERE task = ? AND ts > ? AND error IS NULL
+               WHERE task = ? AND ts > ?
                GROUP BY provider, model
                HAVING COUNT(*) >= ?
             """,

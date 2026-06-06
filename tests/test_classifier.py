@@ -9,6 +9,12 @@ def test_code_task_detection():
     assert cls.domain == "software"
 
 
+def test_code_task_detection_for_pytest_module_prompt():
+    cls = classify("Write pytest tests for the auth module")
+    assert cls.task == "code"
+    assert cls.domain == "software"
+
+
 def test_security_task_detection():
     cls = classify("check for SQL injection vulnerabilities in this endpoint")
     assert cls.task == "security"
@@ -32,6 +38,11 @@ def test_summarize_task_detection():
 def test_finance_domain_detection():
     cls = classify("what is the portfolio yield of this bond fund")
     assert cls.domain == "finance"
+
+
+def test_software_domain_detection_for_stack_questions():
+    cls = classify("Which stack does the project use?")
+    assert cls.domain == "software"
 
 
 def test_ml_domain_detection():

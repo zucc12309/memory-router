@@ -26,6 +26,7 @@ def test_fallback_write_and_read(tmp_path, monkeypatch):
 
     data = _read_fallback()
     assert data["openai"] == "sk-test123"
+    assert b"sk-test123" not in fb_file.read_bytes()
 
 
 def test_tampered_fallback_rejected(tmp_path, monkeypatch):
@@ -86,3 +87,16 @@ def test_delete_secret(tmp_path, monkeypatch):
     data = _read_fallback()
     assert "openai" not in data
     assert "anthropic" in data
+
+
+def test_set_secret_uses_encrypted_file_when_keyring_unavailable(tmp_path, monkeypatch):
+    fb_file = tmp_path / ".secrets.json"
+    hmac_file = tmp_path / ".secrets.hmac"
+    monkeypatch.setattr("memory_router.security.keychain._FALLBACK_FILE", fb_file)
+    monkeypatch.setattr("memory_router.security.keychain._HMAC_FILE", hmac_file)
+    monkeypatch.setattr("memory_router.security.keychain._try_keyring", lambda: None)
+
+    backend = set_secret("openai", "sk-super-secret")
+    assert backend == "encrypted-file"
+    assert b"sk-super-secret" not in fb_file.read_bytes()
+    assert get_secret("openai") == "sk-super-secret"
