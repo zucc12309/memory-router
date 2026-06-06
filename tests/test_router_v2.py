@@ -114,6 +114,17 @@ def test_local_model_preference_is_used_for_local_mode():
     assert decision.model == "qwen2.5:14b"
 
 
+def test_invalid_local_model_preference_falls_back_to_default():
+    cfg = Config(mode="local", local_model="yes")
+    router = Router(cfg)
+
+    classification = classify("Explain APIs")
+    decision = router.route(classification)
+
+    assert decision.provider.name == "ollama"
+    assert decision.model == cfg.models["local_simple"]
+
+
 def test_pinned_routes_do_not_fallback():
     cfg = Config(mode="api")
     router = Router(cfg)

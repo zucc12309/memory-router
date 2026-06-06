@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from memory_router.utils.system import detect_system_specs, recommend_ollama_model
+from memory_router.utils.system import (
+    detect_system_specs,
+    normalize_ollama_model_name,
+    recommend_ollama_model,
+)
 
 
 def test_recommend_ollama_model_uses_detected_ram(monkeypatch):
@@ -42,3 +46,9 @@ def test_recommend_ollama_model_falls_back_when_memory_unknown(monkeypatch):
 
     assert specs.memory_gb is None
     assert recommendation.model == "llama3.1:8b"
+
+
+def test_normalize_ollama_model_name_rejects_confirmation_words():
+    assert normalize_ollama_model_name("yes", "llama3.1:8b") == "llama3.1:8b"
+    assert normalize_ollama_model_name(" y ", "llama3.1:8b") == "llama3.1:8b"
+    assert normalize_ollama_model_name("llama3.2:3b", "llama3.1:8b") == "llama3.2:3b"

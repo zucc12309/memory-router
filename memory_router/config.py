@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 import yaml
 
 from .utils.fs import atomic_write_text
+from .utils.system import normalize_ollama_model_name
 
 # ---------- paths ----------
 
@@ -83,6 +84,7 @@ class Config:
         merged_models = dict(DEFAULT_MODELS)
         merged_models.update(defaults.models or {})
         defaults.models = merged_models
+        defaults.local_model = normalize_ollama_model_name(defaults.local_model)
         return defaults
 
 
@@ -162,6 +164,10 @@ def set_value(key: str, value: Any) -> Config:
         raise ValueError(f"Invalid mode '{value}'. Valid: {', '.join(sorted(_VALID_MODES))}")
     if key == "default_provider" and value not in _VALID_PROVIDERS:
         raise ValueError(f"Invalid provider '{value}'. Valid: {', '.join(sorted(_VALID_PROVIDERS))}")
+    if key == "local_model":
+        value = normalize_ollama_model_name(value)
+        if not value:
+            raise ValueError("local_model must be a real Ollama model id, e.g. llama3.1:8b")
 
     # Validate numeric ranges
     if key in _RANGE_CONSTRAINTS:

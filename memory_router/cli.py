@@ -48,6 +48,7 @@ from .utils.ollama import ensure_ollama_running
 from .utils.system import (
     OLLAMA_MODEL_OPTIONS,
     detect_system_specs,
+    normalize_ollama_model_name,
     recommend_ollama_model,
 )
 from .utils.tokens import percent_saved, estimate_cost_usd, format_cost
@@ -353,10 +354,17 @@ def _explain_provider_error(provider_name: str, model: str, err: Exception) -> N
             f"  • Remove:  memory-router auth {provider_name} --delete"
         )
     elif "404" in msg or "not found" in low or "does not exist" in low or "model_not_found" in low:
-        hint = (
-            f"The model id '{model}' isn't available on this account.\n"
-            f"  • Edit ~/.memory-router/config.yaml under `models:` to a model your API key supports."
-        )
+        if provider_name == "ollama":
+            hint = (
+                f"Ollama does not have the model '{model}' available locally.\n"
+                f"  • Pull it:  ollama pull {model}\n"
+                "  • Or set a known model:  memory-router config set local_model llama3.1:8b"
+            )
+        else:
+            hint = (
+                f"The model id '{model}' isn't available on this account.\n"
+                f"  • Edit ~/.memory-router/config.yaml under `models:` to a model your API key supports."
+            )
     elif "429" in msg or "rate limit" in low or "quota" in low:
         hint = "Rate-limited or out of quota. Wait a moment, or switch providers via `memory-router config set mode hybrid`."
     elif "timeout" in low or "timed out" in low:
@@ -770,11 +778,18 @@ def init():
         recommendation = recommend_ollama_model(specs)
         console.print(_system_specs_panel(specs, recommendation))
         console.print(_local_model_options_table())
-        default_local_model = cfg.local_model or recommendation.model
-        cfg.local_model = Prompt.ask(
+        default_local_model = normalize_ollama_model_name(
+            cfg.local_model, recommendation.model
+        )
+        chosen_model = Prompt.ask(
             "Choose Ollama model",
             default=default_local_model,
         )
+        cfg.local_model = normalize_ollama_model_name(chosen_model, recommendation.model)
+        if cfg.local_model != chosen_model.strip():
+            console.print(
+                f"[yellow]That did not look like a model id, so I set {cfg.local_model} instead.[/yellow]"
+            )
 
     # v2 features
     cfg.mycelium_enabled = Confirm.ask("Enable mycelium memory network?", default=True)

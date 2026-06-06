@@ -70,6 +70,8 @@ OLLAMA_MODEL_OPTIONS: List[OllamaModelOption] = [
     ),
 ]
 
+_CONFIRMATION_WORDS = {"y", "yes", "n", "no", "true", "false", "on", "off"}
+
 
 def detect_system_specs() -> SystemSpecs:
     """Detect the current machine's broad specs using stdlib only."""
@@ -106,6 +108,24 @@ def recommend_ollama_model(specs: SystemSpecs) -> OllamaRecommendation:
         reason=reason,
         tier=chosen.label.lower(),
     )
+
+
+def is_valid_ollama_model_name(model: str) -> bool:
+    """Return False for blank values and common mistaken yes/no answers."""
+    value = (model or "").strip()
+    if not value:
+        return False
+    if value.lower() in _CONFIRMATION_WORDS:
+        return False
+    if any(ch.isspace() for ch in value):
+        return False
+    return True
+
+
+def normalize_ollama_model_name(model: str, fallback: str = "") -> str:
+    """Return a usable Ollama model id, or fallback when input is clearly invalid."""
+    value = (model or "").strip()
+    return value if is_valid_ollama_model_name(value) else fallback
 
 
 def _detect_memory_gb() -> Optional[float]:

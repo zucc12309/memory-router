@@ -43,6 +43,11 @@ def test_config_from_dict_backfills_models():
     assert cfg.models["openai_small"] == "gpt-4o-mini"
 
 
+def test_config_from_dict_drops_invalid_local_model():
+    cfg = Config.from_dict({"mode": "local", "local_model": "yes"})
+    assert cfg.local_model == ""
+
+
 def test_set_value_bool(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     monkeypatch.setattr("memory_router.config.CONFIG_PATH", config_path)
@@ -103,6 +108,19 @@ def test_set_value_invalid_provider(tmp_path, monkeypatch):
         assert False, "Should have raised ValueError"
     except ValueError as e:
         assert "Invalid provider" in str(e)
+
+
+def test_set_value_invalid_local_model(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    monkeypatch.setattr("memory_router.config.CONFIG_PATH", config_path)
+    monkeypatch.setattr("memory_router.config.ROOT_DIR", tmp_path)
+    save_config(Config())
+
+    try:
+        set_value("local_model", "yes")
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "local_model" in str(e)
 
 
 def test_set_value_range_validation(tmp_path, monkeypatch):

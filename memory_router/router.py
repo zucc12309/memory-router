@@ -19,6 +19,7 @@ from .classifier import Classification
 from .config import Config
 from .providers.base import BaseProvider
 from .utils.logging import get_logger
+from .utils.system import normalize_ollama_model_name
 from .providers.anthropic_provider import AnthropicProvider
 
 _log = get_logger(__name__)
@@ -254,7 +255,8 @@ class Router:
         models = self.cfg.models
         ollama = self.providers["ollama"]
         key = "local_simple" if classification.complexity < 0.3 else "local_default"
-        model_id = self.cfg.local_model or models.get(key, "llama3.1:8b")
+        configured_model = normalize_ollama_model_name(self.cfg.local_model)
+        model_id = configured_model or models.get(key, "llama3.1:8b")
         return RouteDecision(ollama, model_id, reason)
 
     def _route_pinned(
