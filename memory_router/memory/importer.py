@@ -12,8 +12,6 @@ All imports deduplicate by content to avoid duplicate memories.
 from __future__ import annotations
 
 import json
-import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -197,7 +195,6 @@ def _import_chatgpt(
 
     imported, skipped = 0, 0
     for conv in conversations:
-        title = conv.get("title", "")
         mapping = conv.get("mapping", {})
         if not isinstance(mapping, dict):
             continue

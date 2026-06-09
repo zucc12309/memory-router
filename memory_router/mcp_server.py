@@ -22,11 +22,12 @@ Then register with Claude Code (one-time):
 
 from __future__ import annotations
 
+import re as _re
 import time
 from typing import Dict, List, Optional
 
 from .classifier import classify
-from .config import Config, ensure_dirs, load_config
+from .config import ensure_dirs, load_config
 from .context_builder import build_context as _build_context
 from .memory.auto_capture import capture_turn
 from .memory.palace import build_palace
@@ -84,8 +85,6 @@ def _get_working_memory(session_id: str = "default"):
     return _WORKING_MEMORIES[session_id]
 
 
-import re as _re
-
 _SAFE_SESSION_RE = _re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
 
 
@@ -96,7 +95,7 @@ def _sanitize_session_id(session_id: str) -> str:
         return "default"
     if not _SAFE_SESSION_RE.match(session_id):
         raise ValueError(
-            f"Invalid session_id: must be alphanumeric/underscore/hyphen, max 128 chars"
+            "Invalid session_id: must be alphanumeric/underscore/hyphen, max 128 chars"
         )
     return session_id
 
@@ -104,6 +103,23 @@ def _sanitize_session_id(session_id: str) -> str:
 def _sanitize_text(text: str, max_len: int = 100_000) -> str:
     """Truncate user-supplied text to a generous safety cap."""
     return text[:max_len].strip()
+
+
+# Patterns that indicate potential prompt injection in stored memories
+_INJECTION_PATTERNS = _re.compile(
+    r"(?i)(ignore previous|disregard|you are now|act as|pretend to be|"
+    r"system:\s*override|<\s*system\s*>|<\s*/?\s*tool_call\s*>)",
+)
+
+
+def _check_memory_content(content: str) -> Optional[str]:
+    """Check content for injection / sensitive patterns. Returns error or None."""
+    if _INJECTION_PATTERNS.search(content):
+        return (
+            "Content contains patterns that resemble prompt injection. "
+            "If this is legitimate content, rephrase to avoid directive language."
+        )
+    return None
 
 
 def _check_rate_limit() -> None:
@@ -213,6 +229,9 @@ def _create_server():
         """
         _check_rate_limit()
         content = _sanitize_text(content)
+        injection_err = _check_memory_content(content)
+        if injection_err:
+            return {"ok": False, "error": injection_err}
         from .memory.sqlite_store import _VALID_MEMORY_TYPES
         if memory_type not in _VALID_MEMORY_TYPES:
             return {"ok": False, "error": f"Invalid memory_type '{memory_type}'. Valid: {', '.join(sorted(_VALID_MEMORY_TYPES))}"}
@@ -536,15 +555,15 @@ def _create_server():
 
     @server.tool()
     def memory_prune(
-        importance_threshold: float = 0.05,
+        confidence_threshold: float = 0.05,
         min_age_days: float = 30.0,
     ) -> dict:
-        """Prune memories whose importance has decayed below threshold.
+        """Prune memories whose confidence has decayed below threshold.
 
         Only prunes memories older than min_age_days.
 
         Args:
-            importance_threshold: Delete memories below this importance.
+            confidence_threshold: Delete memories below this confidence.
             min_age_days: Only prune memories older than this.
 
         Returns: {pruned: int}
@@ -553,7 +572,7 @@ def _create_server():
         store, _ = _get_stores()
         from .memory.decay import prune_stale_memories
 
-        n = prune_stale_memories(store, importance_threshold, min_age_days)
+        n = prune_stale_memories(store, confidence_threshold, min_age_days)
         return {"pruned": n}
 
     @server.tool()

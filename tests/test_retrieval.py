@@ -1,6 +1,5 @@
 """Tests for the retrieval module."""
 
-from pathlib import Path
 
 from memory_router.classifier import classify
 from memory_router.memory.retrieval import retrieve_relevant_memories

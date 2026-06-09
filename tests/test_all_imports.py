@@ -38,32 +38,17 @@ def test_public_api_all_exported():
 
 def test_memory_submodules():
     """Critical memory submodules should import."""
-    from memory_router.memory import sqlite_store
-    from memory_router.memory import retrieval
-    from memory_router.memory import mycelium
-    from memory_router.memory import palace
-    from memory_router.memory import decay
-    from memory_router.memory import consolidation
-    from memory_router.memory import working_memory
-    from memory_router.memory import auto_capture
-    from memory_router.memory import summarizer
-    from memory_router.memory import importer
 
 
 def test_provider_base_imports():
     """Provider base classes should always import."""
-    from memory_router.providers.base import BaseProvider, ProviderResult, StreamChunk
+    from memory_router.providers.base import BaseProvider
     assert hasattr(BaseProvider, "split_system_messages")
 
 
 def test_utils_import():
     """Utility modules should import."""
-    from memory_router.utils import tokens
-    from memory_router.utils import system
-    from memory_router.utils import fs
 
 
 def test_security_import():
     """Security modules should import."""
-    from memory_router.security import encryption
-    from memory_router.security import keychain

@@ -19,7 +19,6 @@ import json
 import os
 import platform
 import stat
-from pathlib import Path
 from typing import Optional
 
 from ..config import ROOT_DIR, ensure_dirs

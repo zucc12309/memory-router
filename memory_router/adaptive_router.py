@@ -17,7 +17,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from .classifier import Classification
 from .config import Config, ROOT_DIR, ensure_dirs

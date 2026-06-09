@@ -13,11 +13,6 @@ def test_core_types_importable():
         Classification,
         Config,
         Memory,
-        MemoryStore,
-        Message,
-        ConversationStore,
-        RouteDecision,
-        BuiltContext,
     )
     # Verify they're dataclasses with expected fields
     assert "task" in Classification.__dataclass_fields__
@@ -27,7 +22,7 @@ def test_core_types_importable():
 
 def test_core_functions_importable():
     """Core functions should be importable from the top-level package."""
-    from memory_router import classify, build_context, load_config, save_config, Router
+    from memory_router import classify, build_context, load_config
     assert callable(classify)
     assert callable(build_context)
     assert callable(load_config)

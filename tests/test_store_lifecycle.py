@@ -1,7 +1,6 @@
 """Tests for store lifecycle (close, context manager) and validation."""
 
 import pytest
-from pathlib import Path
 
 from memory_router.memory.sqlite_store import (
     ConversationStore,

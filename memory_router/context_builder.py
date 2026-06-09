@@ -127,9 +127,11 @@ def build_context(
         priorities.append(0.3)  # Low priority — can be dropped
 
     # 5. Last K verbatim turns (most recent = highest priority)
+    _VALID_ROLES = {"user", "assistant", "system"}
     recent = conv_store.recent(session_id=session_id, limit=cfg.max_recent_messages)
     for i, m in enumerate(recent):
-        messages.append({"role": m.role, "content": m.content})
+        role = m.role if m.role in _VALID_ROLES else "user"
+        messages.append({"role": role, "content": m.content})
         # Most recent turns get higher priority
         recency_score = 0.7 - ((len(recent) - 1 - i) * 0.08)
         priorities.append(max(0.2, recency_score))

@@ -15,7 +15,6 @@ from __future__ import annotations
 import sqlite3
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 from .config import ROOT_DIR, ensure_dirs

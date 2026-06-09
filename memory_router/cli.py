@@ -43,7 +43,7 @@ from .memory.auto_capture import capture_turn
 from .memory.palace import build_palace
 from .memory.sqlite_store import ConversationStore, Memory, MemoryStore, Message
 from .router import Router
-from .security.keychain import delete_secret, get_secret, set_secret
+from .security.keychain import delete_secret, set_secret
 from .stats import record_usage, summarize_stats, reset_stats
 from .utils.ollama import ensure_ollama_model_available, ensure_ollama_running
 from .utils.system import (
@@ -1280,7 +1280,7 @@ def memory_decay_cmd(
     console.print(f"[dim]Total: {stats['total_memories']} | "
                   f"Strong (≥0.8): {stats['strong_count']} | "
                   f"Stale (<0.1): {stats['stale_count']} | "
-                  f"Avg importance: {stats['avg_importance']:.3f}[/dim]")
+                  f"Avg confidence: {stats['avg_confidence']:.3f}[/dim]")
 
 
 @memory_app.command("export")
@@ -1468,7 +1468,6 @@ def _render_flat_prompt(messages: list[dict]) -> str:
 
 def entry() -> None:
     """Console entry point."""
-    import sys
     sys.argv = [sys.argv[0], *_rewrite_argv(sys.argv[1:])]
     app()
 

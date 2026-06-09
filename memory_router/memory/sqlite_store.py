@@ -42,10 +42,23 @@ def _get_log():
 
 
 def _sanitize_fts_term(term: str) -> str:
-    """Escape FTS5 special characters by wrapping in double quotes."""
-    if not term or not term.isalpha() or len(term) <= 2:
+    """Escape FTS5 special characters by wrapping in double quotes.
+
+    Handles code tokens like `auth.py`, `gpt-4o`, `my_func` by allowing
+    alphanumeric characters plus dots, hyphens, and underscores.
+    Strips FTS5 operators (*, NEAR, NOT, AND, OR) when used bare.
+    """
+    if not term or len(term) <= 2:
         return ""
-    return f'"{term}"'
+    # Strip FTS5 wildcard/prefix operators
+    cleaned = term.strip("*")
+    if not cleaned:
+        return ""
+    # Allow alphanumeric + dots + hyphens + underscores (common in code)
+    if not re.match(r'^[a-zA-Z0-9._\-]+$', cleaned):
+        return ""
+    # FTS5 boolean operators must not be passed unquoted
+    return f'"{cleaned}"'
 
 
 # ---------- data classes ----------
@@ -132,8 +145,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 def _connect(path: Path, schema: str) -> sqlite3.Connection:
     ensure_dirs()
     ensure_secure_file(path)
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(schema)
     conn.commit()
     try:

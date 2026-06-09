@@ -12,21 +12,27 @@ v2 changes:
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from .classifier import Classification
 from .config import Config
-from .providers.base import BaseProvider
-from .utils.logging import get_logger
-from .utils.system import normalize_ollama_model_name
 from .providers.anthropic_provider import AnthropicProvider
-
-_log = get_logger(__name__)
+from .providers.base import BaseProvider
 from .providers.gemini_provider import GeminiProvider
 from .providers.ollama_provider import OllamaProvider
 from .providers.openai_provider import OpenAIProvider
 from .providers.ruflo_provider import RufloProvider
+from .utils.logging import get_logger
+from .utils.system import normalize_ollama_model_name
+
+_log = get_logger(__name__)
+
+# Retry configuration
+MAX_RETRIES = 2
+RETRY_BASE_DELAY_S = 1.0
+RETRY_BACKOFF_FACTOR = 2.0
 
 
 @dataclass
@@ -182,21 +188,51 @@ class Router:
             classification, "no API providers available, falling back to local"
         )
 
+    def _attempt_with_retry(
+        self, provider: BaseProvider, model: str, messages: List[dict], **kwargs
+    ):
+        """Try a single provider with exponential backoff retry."""
+        last_err = None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                t0 = time.time()
+                result = provider.complete(model, messages, **kwargs)
+                result.latency_ms = int((time.time() - t0) * 1000)
+                return result
+            except Exception as e:
+                last_err = e
+                is_retryable = _is_retryable_error(e)
+                if not is_retryable or attempt >= MAX_RETRIES:
+                    raise
+                delay = RETRY_BASE_DELAY_S * (RETRY_BACKOFF_FACTOR ** attempt)
+                _log.warning(
+                    "retrying provider after error",
+                    extra={
+                        "provider": provider.name, "model": model,
+                        "attempt": attempt + 1, "delay_s": delay,
+                        "error": str(e),
+                    },
+                )
+                time.sleep(delay)
+        raise last_err  # unreachable but satisfies type checker
+
     def complete_with_fallback(
         self,
         decision: RouteDecision,
         messages: List[dict],
         **kwargs,
     ):
-        """Execute completion with automatic fallback on failure.
+        """Execute completion with retry + automatic fallback on failure.
 
-        Tries the primary provider first. On failure, iterates through
-        fallback providers before giving up. Returns
-        (result, actual_provider, actual_model).
+        Tries the primary provider first (with retries for transient errors).
+        On permanent failure, iterates through fallback providers before
+        giving up. Returns (result, actual_provider, actual_model).
         """
-        # Try primary
+        # Try primary with retry
         try:
-            result = decision.provider.complete(decision.model, messages, **kwargs)
+            result = self._attempt_with_retry(
+                decision.provider, decision.model, messages, **kwargs
+            )
             _log.info("completion succeeded", extra={
                 "provider": decision.provider.name, "model": decision.model,
             })
@@ -211,18 +247,22 @@ class Router:
             if not decision.fallback_providers:
                 raise
 
-            # Try each fallback
+            # Try each fallback (also with retry)
             last_err = primary_err
             for fb_name in decision.fallback_providers:
                 fb_provider = self.providers.get(fb_name)
                 if not fb_provider or not fb_provider.is_available():
                     continue
-                # Pick a reasonable model for the fallback provider
                 fb_model = self._pick_fallback_model(fb_name, decision.model)
                 if not fb_model:
                     continue
                 try:
-                    result = fb_provider.complete(fb_model, messages, **kwargs)
+                    result = self._attempt_with_retry(
+                        fb_provider, fb_model, messages, **kwargs
+                    )
+                    _log.info("fallback succeeded", extra={
+                        "provider": fb_name, "model": fb_model,
+                    })
                     return result, fb_name, fb_model
                 except Exception as fb_err:
                     last_err = fb_err
@@ -326,3 +366,25 @@ def _guess_provider_from_model(model_id: str) -> Optional[str]:
     if "llama" in m or "mistral" in m or "qwen" in m or "phi" in m or "deepseek" in m:
         return "ollama"
     return None
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    """Determine if an error is transient and worth retrying.
+
+    Rate-limit (429), server errors (5xx), timeouts, and connection
+    errors are retryable.  Auth (401/403) and bad-request (400) are not.
+    """
+    msg = str(exc).lower()
+    # HTTP status codes embedded in error messages
+    if "429" in msg or "rate" in msg:
+        return True
+    if any(code in msg for code in ("500", "502", "503", "504")):
+        return True
+    # Connection / timeout errors
+    if any(term in msg for term in ("timeout", "timed out", "connection", "reset")):
+        return True
+    # Provider-specific retryable attributes
+    if hasattr(exc, "status_code"):
+        code = getattr(exc, "status_code", 0)
+        return code in (429, 500, 502, 503, 504)
+    return False

@@ -11,14 +11,11 @@ similarity search. Embeddings are generated externally and passed in.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import struct
 from dataclasses import dataclass
-from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
-from ..config import MEMORIES_DB
 
 
 @dataclass

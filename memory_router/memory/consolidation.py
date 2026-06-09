@@ -16,11 +16,10 @@ No embeddings or LLM calls required — pure keyword overlap.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Dict, List, Set, Tuple
 
-from .sqlite_store import Memory, MemoryStore
+from .sqlite_store import MemoryStore
 
 
 @dataclass

@@ -1,7 +1,6 @@
 """Tests for encryption module."""
 
 from memory_router.security.encryption import (
-    is_encryption_available,
     encrypt_content,
     decrypt_content,
     compute_hmac,

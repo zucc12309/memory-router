@@ -6,7 +6,6 @@ real stats while running tests.
 
 from __future__ import annotations
 
-import importlib
 
 import memory_router.stats as stats_mod
 

@@ -8,7 +8,6 @@ def test_encrypt_warns_without_cryptography():
     """encrypt_content should warn when cryptography is missing."""
     with patch.dict("sys.modules", {"cryptography": None, "cryptography.hazmat.primitives.ciphers.aead": None}):
         # Force reimport to trigger the ImportError path
-        import importlib
         from memory_router.security import encryption
 
         # Temporarily break the import

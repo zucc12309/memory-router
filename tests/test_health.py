@@ -1,6 +1,6 @@
 """Tests for the health check module."""
 
-from memory_router.health import check_health, HealthReport, HealthCheck
+from memory_router.health import check_health, HealthReport
 
 
 def test_health_report_structure():

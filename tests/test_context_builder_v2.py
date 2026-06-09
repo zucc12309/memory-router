@@ -81,7 +81,6 @@ def test_priority_preserves_query(tmp_path):
 
 def test_mycelium_integration(tmp_path):
     """Test that mycelium spread activation is used when provided."""
-    import sqlite3
     from memory_router.memory.mycelium import MyceliumNetwork
 
     mem_store, conv_store, cfg = _setup(tmp_path)

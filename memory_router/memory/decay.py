@@ -11,7 +11,6 @@ Pruning: archives memories whose confidence drops below a threshold.
 
 from __future__ import annotations
 
-import math
 import time
 from typing import Optional
 
@@ -22,6 +21,8 @@ def apply_decay(store: MemoryStore, now: Optional[float] = None) -> int:
     """Decay confidence on all memories based on time since last use.
 
     Called lazily on search or periodically via CLI/cron.
+    Decays the *confidence* field (not importance) — importance is the
+    user-assigned base weight, confidence reflects temporal reliability.
     Returns count of memories updated.
     """
     now = now or time.time()
@@ -31,14 +32,14 @@ def apply_decay(store: MemoryStore, now: Optional[float] = None) -> int:
     # if the memory has never been used.
     cur = conn.execute(
         """UPDATE memories
-           SET importance = MAX(0.01, importance * (
+           SET confidence = MAX(0.01, confidence * (
                CASE
                    WHEN last_used > 0
                    THEN EXP(-0.001 * ((? - last_used) / 86400.0))
                    ELSE EXP(-0.001 * ((? - created_at) / 86400.0))
                END
            ))
-           WHERE importance > 0.01
+           WHERE confidence > 0.01
              AND (
                  (last_used > 0 AND (? - last_used) > 86400)
                  OR (last_used = 0 AND (? - created_at) > 86400)
@@ -51,15 +52,16 @@ def apply_decay(store: MemoryStore, now: Optional[float] = None) -> int:
 
 
 def reinforce(store: MemoryStore, memory_id: int, boost: float = 0.1) -> None:
-    """Reinforce a memory — increases importance and resets decay clock.
+    """Reinforce a memory — restores confidence and resets decay clock.
 
     Called when a memory is retrieved and used in context.
+    Boosts *confidence* (temporal reliability), not importance (user weight).
     """
     now = time.time()
     conn = store.conn
     conn.execute(
         """UPDATE memories
-           SET importance = MIN(1.0, importance + ?),
+           SET confidence = MIN(1.0, confidence + ?),
                last_used = ?,
                usage_count = usage_count + 1
            WHERE id = ?
@@ -71,13 +73,13 @@ def reinforce(store: MemoryStore, memory_id: int, boost: float = 0.1) -> None:
 
 def prune_stale_memories(
     store: MemoryStore,
-    importance_threshold: float = 0.05,
+    confidence_threshold: float = 0.05,
     min_age_days: float = 30.0,
 ) -> int:
-    """Delete memories whose importance has decayed below threshold.
+    """Delete memories whose confidence has decayed below threshold.
 
     Only prunes memories older than min_age_days to avoid deleting
-    recently-added low-importance memories.
+    recently-added low-confidence memories.
 
     Returns count of memories deleted.
     """
@@ -86,10 +88,10 @@ def prune_stale_memories(
     conn = store.conn
     cur = conn.execute(
         """DELETE FROM memories
-           WHERE importance < ?
+           WHERE confidence < ?
              AND created_at < ?
         """,
-        (importance_threshold, cutoff),
+        (confidence_threshold, cutoff),
     )
     conn.commit()
     return cur.rowcount
@@ -101,19 +103,19 @@ def get_decay_stats(store: MemoryStore) -> dict:
     row = conn.execute(
         """SELECT
                COUNT(*),
-               COALESCE(AVG(importance), 0),
-               COALESCE(MIN(importance), 0),
-               COALESCE(MAX(importance), 0),
-               SUM(CASE WHEN importance < 0.1 THEN 1 ELSE 0 END),
-               SUM(CASE WHEN importance >= 0.8 THEN 1 ELSE 0 END)
+               COALESCE(AVG(confidence), 0),
+               COALESCE(MIN(confidence), 0),
+               COALESCE(MAX(confidence), 0),
+               SUM(CASE WHEN confidence < 0.1 THEN 1 ELSE 0 END),
+               SUM(CASE WHEN confidence >= 0.8 THEN 1 ELSE 0 END)
            FROM memories
         """
     ).fetchone()
     return {
         "total_memories": row[0],
-        "avg_importance": round(row[1], 3),
-        "min_importance": round(row[2], 3),
-        "max_importance": round(row[3], 3),
+        "avg_confidence": round(row[1], 3),
+        "min_confidence": round(row[2], 3),
+        "max_confidence": round(row[3], 3),
         "stale_count": row[4] or 0,
         "strong_count": row[5] or 0,
     }

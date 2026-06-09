@@ -8,7 +8,7 @@ tools, and programmatic integration.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import List
 
 
 @dataclass
@@ -96,7 +96,7 @@ def _check_conversation_store() -> HealthCheck:
     try:
         from .memory.sqlite_store import ConversationStore
 
-        store = ConversationStore()
+        ConversationStore()  # verify we can instantiate
         return HealthCheck("conversation_store", "ok", "connected")
     except Exception as e:
         return HealthCheck("conversation_store", "error", str(e))

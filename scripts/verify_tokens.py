@@ -64,7 +64,7 @@ def main():
     client = genai.Client(api_key=api_key)
     resp = client.models.count_tokens(model=MODEL, contents=contents)
     naive_total = resp.total_tokens
-    print(f"Naive baseline (real, from Google tokenizer):")
+    print("Naive baseline (real, from Google tokenizer):")
     print(f"  Full history through model={MODEL}: {naive_total:,} tokens\n")
 
     # Cost the naive call would have incurred (input only).

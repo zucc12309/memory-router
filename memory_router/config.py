@@ -10,7 +10,7 @@ import os
 import stat
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import yaml
 
@@ -66,7 +66,7 @@ class Config:
     memory_decay_enabled: bool = True    # enable confidence decay on memories
     working_memory_capacity: int = 20    # max working memory slots per session
     adaptive_routing: bool = False       # enable outcome-learning adaptive router
-    encryption_enabled: bool = False     # enable AES-256-GCM encryption at rest
+    encryption_enabled: bool = False     # enable AES-256-GCM encryption for export/import (not live DB)
     mcp_rate_limit: int = 100            # MCP tool calls per minute
 
     def to_dict(self) -> Dict[str, Any]:

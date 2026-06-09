@@ -1,8 +1,6 @@
 """Tests for credential storage with HMAC integrity."""
 
 import json
-from pathlib import Path
-from unittest.mock import patch
 
 from memory_router.security.keychain import (
     _read_fallback,

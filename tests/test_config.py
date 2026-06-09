@@ -1,6 +1,5 @@
 """Tests for configuration management."""
 
-from pathlib import Path
 
 from memory_router.config import Config, save_config, load_config, set_value, DEFAULT_MODELS
 

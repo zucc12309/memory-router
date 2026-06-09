@@ -15,9 +15,8 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
-from .sqlite_store import Memory, MemoryStore
 
 
 _MYCELIUM_SCHEMA = """

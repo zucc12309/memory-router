@@ -1,14 +1,11 @@
 """Tests for the adaptive router with outcome learning."""
 
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from memory_router.adaptive_router import (
     AdaptiveRouter,
     RouteOutcome,
-    ProviderPerformance,
-    ROUTE_HISTORY_DB,
 )
 from memory_router.classifier import Classification
 from memory_router.config import Config
@@ -68,7 +65,7 @@ def test_fallback_to_rule_based_with_insufficient_data(tmp_path):
     # Should fall back to rule-based — not crash
     with patch.object(router._rule_router, "route") as mock_route:
         mock_route.return_value = MagicMock()
-        result = router.route(_classification())
+        router.route(_classification())
         mock_route.assert_called_once()
 
 
