@@ -20,6 +20,7 @@ from .memory.sqlite_store import (
     MemoryStore,
     Message,
 )
+from .ask_service import AskResult, AskService
 from .router import RouteDecision, Router
 from .health import check_health, HealthReport
 
@@ -35,6 +36,8 @@ __all__ = [
     "RouteDecision",
     "BuiltContext",
     "HealthReport",
+    "AskResult",
+    "AskService",
     # Functions
     "classify",
     "build_context",

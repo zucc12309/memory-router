@@ -31,13 +31,13 @@ Memory Router works *alongside* your existing tools. Your memory stays on your m
 | **Import/Export** | Import from ChatGPT, Claude, or generic JSON; encrypted export |
 | **Consolidation** | Find and merge near-duplicate memories automatically |
 | **Semantic Dedup** | Jaccard-based similarity search before storing |
-| **Encryption at Rest** | AES-256-GCM for exported memories with machine-derived keys |
+| **Encrypted Export** | AES-256-GCM for exported/imported memory files with machine-derived keys |
 | **HMAC Integrity** | Tamper detection on the secrets fallback file |
 | **Structured Logging** | JSON-formatted rotating logs under `~/.memory-router/logs/` |
 | **Health Checks** | Programmatic `check_health()` and `memory-router doctor` |
 | **Config Validation** | Enum/range validation on all config fields |
 | **tiktoken** | Accurate OpenAI token counting with graceful heuristic fallback |
-| **146 Tests** | Comprehensive test suite covering all modules |
+| **223+ Tests** | Comprehensive test suite covering all modules |
 
 ---
 

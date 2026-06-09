@@ -108,7 +108,9 @@ class AdaptiveRouter:
         if self._conn is not None:
             return self._conn
         ensure_dirs()
-        self._conn = sqlite3.connect(str(ROUTE_HISTORY_DB))
+        self._conn = sqlite3.connect(str(ROUTE_HISTORY_DB), timeout=10)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_ROUTE_HISTORY_SCHEMA)
         self._conn.commit()
         return self._conn
@@ -139,12 +141,22 @@ class AdaptiveRouter:
         return self._rule_router.route(classification, force_local)
 
     def _adaptive_route(self, classification: Classification) -> Optional[RouteDecision]:
-        """Score available providers by historical performance."""
+        """Score available providers by historical performance.
+
+        Filters by task, domain, and complexity band for more accurate
+        routing decisions instead of using task-only aggregates.
+        """
         conn = self._ensure_db()
         cutoff = time.time() - (self.LOOKBACK_DAYS * 86400)
         task = classification.task
+        domain = classification.domain
+        complexity = classification.complexity
 
-        # Get performance data for all providers on this task
+        # Complexity band: low (<0.3), medium (0.3-0.7), high (>0.7)
+        c_low = max(0.0, complexity - 0.3)
+        c_high = min(1.0, complexity + 0.3)
+
+        # Try domain+task+complexity-aware query first
         rows = conn.execute(
             """SELECT
                    provider, model,
@@ -154,12 +166,30 @@ class AdaptiveRouter:
                    COUNT(*) as sample_count,
                    SUM(CASE WHEN error IS NOT NULL THEN 1.0 ELSE 0.0 END) / COUNT(*) as error_rate
                FROM route_outcomes
-               WHERE task = ? AND ts > ?
+               WHERE task = ? AND domain = ? AND complexity BETWEEN ? AND ? AND ts > ?
                GROUP BY provider, model
                HAVING COUNT(*) >= ?
             """,
-            (task, cutoff, self.MIN_SAMPLES),
+            (task, domain, c_low, c_high, cutoff, self.MIN_SAMPLES),
         ).fetchall()
+
+        # Fallback to task-only if domain-specific data is insufficient
+        if not rows:
+            rows = conn.execute(
+                """SELECT
+                       provider, model,
+                       AVG(quality_signal) as avg_quality,
+                       AVG(latency_ms) as avg_latency,
+                       AVG(cost_usd) as avg_cost,
+                       COUNT(*) as sample_count,
+                       SUM(CASE WHEN error IS NOT NULL THEN 1.0 ELSE 0.0 END) / COUNT(*) as error_rate
+                   FROM route_outcomes
+                   WHERE task = ? AND ts > ?
+                   GROUP BY provider, model
+                   HAVING COUNT(*) >= ?
+                """,
+                (task, cutoff, self.MIN_SAMPLES),
+            ).fetchall()
 
         if not rows:
             return None

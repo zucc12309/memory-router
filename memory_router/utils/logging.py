@@ -31,9 +31,9 @@ class _JSONFormatter(logging.Formatter):
             "msg": record.getMessage(),
         }
         # Merge any extra keys the caller passed
-        for key in ("memory_id", "domain", "task", "provider", "model",
-                     "latency_ms", "tokens", "error", "session_id",
-                     "action", "count", "detail"):
+        for key in ("request_id", "memory_id", "domain", "task", "provider",
+                     "model", "latency_ms", "tokens", "error", "session_id",
+                     "action", "count", "detail", "attempt", "delay_s"):
             val = getattr(record, key, None)
             if val is not None:
                 entry[key] = val

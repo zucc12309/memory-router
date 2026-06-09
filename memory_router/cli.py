@@ -603,7 +603,8 @@ def _ask(query: str, no_memory: bool, local: bool, session: str,
     _record_adaptive_outcome(cfg, router, decision, classification,
                              real_in, real_out, latency_ms, cost, None,
                              actual_provider=actual_provider,
-                             actual_model=actual_model)
+                             actual_model=actual_model,
+                             answer=result_text)
 
     # Auto-capture
     try:
@@ -684,6 +685,7 @@ def _record_adaptive_outcome(
     error,
     actual_provider: Optional[str] = None,
     actual_model: Optional[str] = None,
+    answer: str = "",
 ):
     """Record outcome for adaptive routing if enabled."""
     if not cfg.adaptive_routing:
@@ -691,8 +693,9 @@ def _record_adaptive_outcome(
     try:
         from .adaptive_router import AdaptiveRouter, RouteOutcome
         if isinstance(router, AdaptiveRouter):
-            # Estimate quality from auto-capture success
-            quality = 0.7 if error is None else 0.1
+            # Use heuristic quality signal based on response characteristics
+            from .ask_service import _estimate_quality
+            quality = _estimate_quality(answer, error, latency_ms)
             router.record_outcome(RouteOutcome(
                 provider=actual_provider or decision.provider.name,
                 model=actual_model or decision.model,
