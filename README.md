@@ -80,8 +80,10 @@ pip install memory-router
 pip install "memory-router[openai]"
 pip install "memory-router[anthropic]"
 pip install "memory-router[gemini]"
-pip install "memory-router[encryption]"   # AES-256-GCM at-rest encryption
+pip install "memory-router[mcp]"          # MCP server (Claude Code, Cursor, ...)
+pip install "memory-router[encryption]"   # AES-256-GCM encrypted export/import
 pip install "memory-router[tiktoken]"     # accurate OpenAI token counting
+pip install "memory-router[numpy]"        # faster vector similarity backend
 pip install "memory-router[all]"          # everything
 ```
 
@@ -250,7 +252,7 @@ claude mcp add --scope user memory-router -- memory-router mcp serve
 # Ccommand: memory-router | Args: mcp serve
 ```
 
-**Available MCP tools (19):**
+**Available MCP tools (20):**
 
 | Tool | What it does |
 |---|---|
@@ -272,6 +274,7 @@ claude mcp add --scope user memory-router -- memory-router mcp serve
 | `mycelium_stats()` | Associative network health |
 | `mycelium_neighbors(memory_id, limit)` | Direct neighbors in the graph |
 | `stats_summary()` | Cumulative token-saving stats |
+| `stats_reset()` | Reset cumulative usage stats |
 | `health_check()` | System diagnostics |
 
 All tools are rate-limited (configurable via `mcp_rate_limit`), use singleton connection pooling, and validate inputs.
@@ -341,9 +344,9 @@ Inspired by fungal mycelium networks, memories form associative connections:
 
 Memories lose confidence over time unless reinforced:
 
-- **Decay**: Exponential decay based on days since last use
-- **Reinforcement**: Using a memory boosts its importance and resets the decay clock
-- **Pruning**: `memory-router memory decay --prune` removes memories below threshold
+- **Decay**: Exponential decay of *confidence* (temporal reliability) based on days since last use — importance (your weight) is never touched
+- **Reinforcement**: Using a memory boosts its confidence and resets the decay clock
+- **Pruning**: `memory-router memory decay --prune` removes memories whose confidence falls below threshold
 
 ### Memory Consolidation
 
@@ -368,8 +371,10 @@ memory_router/
 ├── classifier.py              # Rule-based task/domain/concept extraction
 ├── context_builder.py         # Priority-scored context assembly
 ├── token_optimizer.py         # Budget enforcement (priority + positional)
-├── router.py                  # Rule-based routing with fallback
+├── ask_service.py             # Shared classify→route→complete orchestration
+├── router.py                  # Rule-based routing with fallback + retry
 ├── adaptive_router.py         # Outcome-learning adaptive router
+├── mcp_server.py              # MCP server (20 tools, rate-limited, sanitized)
 ├── health.py                  # Structured health checks
 ├── stats.py                   # Cumulative usage statistics
 ├── benchmark.py               # Token savings & quality benchmarks
@@ -431,7 +436,7 @@ print(report.overall)  # "ok" | "degraded" | "unhealthy"
 ## Security
 
 - **API keys**: OS keychain first, HMAC-SHA256 verified fallback file at 0600 permissions
-- **Encryption at rest**: Optional AES-256-GCM for exported memories (`pip install memory-router[encryption]`)
+- **Encrypted export/import**: Optional AES-256-GCM for exported/imported memory files with machine-derived keys (`pip install memory-router[encryption]`). The live SQLite databases are stored unencrypted — encryption applies to portable export files, not the working DB.
 - **Input validation**: All MCP tool inputs sanitized (session IDs regex-validated, text truncated at boundaries)
 - **Rate limiting**: Configurable per-minute limit on MCP tool calls (default: 100/min)
 - **No secrets in config**: Keys never written to `config.yaml`
@@ -458,8 +463,9 @@ print(report.overall)  # "ok" | "degraded" | "unhealthy"
 - [x] ~~Per-domain importance decay~~
 - [x] ~~Adaptive routing with outcome learning~~
 - [x] ~~Mycelium associative memory network~~
-- [x] ~~Encryption at rest~~
-- [ ] Real vector embeddings (FAISS / sqlite-vec / Chroma)
+- [x] ~~Encrypted export/import~~
+- [x] ~~Vector similarity backend (NumPy / pure-Python cosine)~~
+- [ ] Auto-generated embeddings + ANN index (FAISS / sqlite-vec / Chroma)
 - [ ] LLM-backed concept extraction as a classifier fallback
 - [ ] LLM-based summarizer (opt-in, runs on local model)
 - [ ] Multi-user / team memory sharing
