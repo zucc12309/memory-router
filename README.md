@@ -37,7 +37,7 @@ Memory Router works *alongside* your existing tools. Your memory stays on your m
 | **Health Checks** | Programmatic `check_health()` and `memory-router doctor` |
 | **Config Validation** | Enum/range validation on all config fields |
 | **tiktoken** | Accurate OpenAI token counting with graceful heuristic fallback |
-| **223+ Tests** | Comprehensive test suite covering all modules |
+| **368+ Tests** | Comprehensive test suite (72% coverage) covering all modules |
 
 ---
 
@@ -96,7 +96,7 @@ pip install -e ".[dev]"
 ### Testing without API keys
 
 ```bash
-pytest -q                                          # 146 tests, no API keys needed
+pytest -q                                          # 368 tests, no API keys needed
 memory-router init                                 # choose local mode
 memory-router build-context "Explain this code"
 memory-router memory add "Prefer pytest" --domain software --task code
