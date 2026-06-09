@@ -45,18 +45,50 @@ class RouteDecision:
     allow_fallback: bool = True
 
 
+# ---------------------------------------------------------------------------
+# Provider registry — lazy instantiation, extensible
+# ---------------------------------------------------------------------------
+
+_PROVIDER_FACTORIES: Dict[str, type] = {
+    "ollama": OllamaProvider,
+    "openai": OpenAIProvider,
+    "anthropic": AnthropicProvider,
+    "gemini": GeminiProvider,
+    "ruflo": RufloProvider,
+}
+
+
+def register_provider(name: str, cls: type) -> None:
+    """Register a custom provider class.
+
+    Usage::
+
+        from memory_router.router import register_provider
+        register_provider("my_provider", MyProvider)
+    """
+    _PROVIDER_FACTORIES[name] = cls
+
+
+def _build_providers(cfg: Config) -> Dict[str, BaseProvider]:
+    """Instantiate all registered providers."""
+    providers: Dict[str, BaseProvider] = {}
+    for name, factory in _PROVIDER_FACTORIES.items():
+        try:
+            if name == "ollama":
+                providers[name] = factory(host=cfg.ollama_host)
+            else:
+                providers[name] = factory()
+        except Exception:
+            pass  # Skip providers that fail to instantiate
+    return providers
+
+
 class Router:
     """Holds the live provider instances and decides which to use."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.providers: Dict[str, BaseProvider] = {
-            "ollama": OllamaProvider(host=cfg.ollama_host),
-            "openai": OpenAIProvider(),
-            "anthropic": AnthropicProvider(),
-            "gemini": GeminiProvider(),
-            "ruflo": RufloProvider(),
-        }
+        self.providers: Dict[str, BaseProvider] = _build_providers(cfg)
 
     def _ordered_provider_names(self, names: List[str]) -> List[str]:
         """Prefer the configured default provider when it is in the candidate set."""

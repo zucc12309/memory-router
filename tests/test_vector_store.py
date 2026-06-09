@@ -45,3 +45,55 @@ def test_noop_without_connection():
     assert not store.enabled
     results = store.query([1.0], top_k=5)
     assert results == []
+
+
+def test_add_replace():
+    store = _make_store()
+    store.add(1, [0.1, 0.2, 0.3, 0.4])
+    store.add(1, [0.5, 0.6, 0.7, 0.8])
+    assert store.count() == 1
+
+
+def test_query_zero_vector():
+    store = _make_store()
+    store.add(1, [1.0, 0.0, 0.0, 0.0])
+    results = store.query([0.0, 0.0, 0.0, 0.0])
+    assert results == []
+
+
+def test_query_top_k_limit():
+    store = _make_store()
+    for i in range(10):
+        store.add(i, [float(i), 1.0, 0.0, 0.0])
+    results = store.query([5.0, 1.0, 0.0, 0.0], top_k=3)
+    assert len(results) <= 3
+
+
+def test_blob_roundtrip():
+    store = _make_store()
+    original = [0.123, 0.456, 0.789, 1.011]
+    blob = store._to_blob(original)
+    restored = store._from_blob(blob)
+    assert len(restored) == 4
+    for a, b in zip(original, restored):
+        assert abs(a - b) < 1e-5
+
+
+def test_python_fallback():
+    store = _make_store()
+    store._numpy = None  # Force Python path
+    store.add(1, [1.0, 0.0, 0.0, 0.0])
+    store.add(2, [0.0, 1.0, 0.0, 0.0])
+    rows = store.conn.execute(
+        "SELECT memory_id, embedding FROM memory_embeddings"
+    ).fetchall()
+    hits = store._query_python([1.0, 0.0, 0.0, 0.0], rows, top_k=2)
+    assert len(hits) >= 1
+    assert hits[0].memory_id == 1
+
+
+def test_disabled_add_remove_noop():
+    store = VectorStore(conn=None, dim=4)
+    store.add(1, [0.1, 0.2, 0.3, 0.4])  # no-op
+    assert store.count() == 0
+    store.remove(1)  # no-op, shouldn't raise
