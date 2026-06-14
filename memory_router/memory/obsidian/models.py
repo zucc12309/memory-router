@@ -33,22 +33,47 @@ GITIGNORE = ".gitignore"
 MANIFEST = ".memory-router-index.json"
 
 # Domain keyword → knowledge-note folder. Matched by substring, first hit wins.
-# Unmatched domains land in 00_Inbox so nothing is silently lost.
+# Covers every domain the rule-based classifier can emit (finance/software/ml/
+# legal/medical/science) plus common free-form tags.
 _CATEGORY_RULES: List[Tuple[Tuple[str, ...], str]] = [
-    (("project", "app", "product", "software", "code", "engineering"), "01_Projects"),
-    (("research", "science", "ml", "ai", "paper", "study", "math"), "02_Research"),
-    (("decision", "architecture", "adr", "tradeoff", "policy"), "03_Decisions"),
+    (("project", "app", "product", "software", "code", "engineering", "dev"), "01_Projects"),
+    (
+        ("research", "science", "ml", "ai", "paper", "study", "math",
+         "finance", "legal", "medical", "physics", "biology", "chemistry"),
+        "02_Research",
+    ),
+    (("decision", "architecture", "adr", "tradeoff", "policy", "agentic"), "03_Decisions"),
     (("people", "person", "contact", "team", "user"), "04_People"),
     (("conversation", "chat", "thread", "session"), "05_Conversations"),
 ]
 
+# Fallback for domain="general" (the classifier's default): route by *task* so
+# generic memories don't all pile into the Inbox.
+_TASK_FALLBACK: List[Tuple[Tuple[str, ...], str]] = [
+    (("code", "test", "debug"), "01_Projects"),
+    (("explain", "summarize", "reasoning", "research"), "02_Research"),
+    (("agentic", "plan", "design", "decision"), "03_Decisions"),
+    (("chat", "conversation"), "05_Conversations"),
+]
 
-def category_for(domain: str) -> str:
-    """Map a memory domain to a knowledge-note folder."""
+
+def category_for(domain: str, task: str = "") -> str:
+    """Map a memory's (domain, task) to a knowledge-note folder.
+
+    Domain is the primary signal. When it is empty or "general" (the
+    classifier's default), fall back to the task so generic memories still
+    get sorted instead of all landing in 00_Inbox.
+    """
     d = (domain or "").lower()
-    for keywords, folder in _CATEGORY_RULES:
-        if any(k in d for k in keywords):
-            return folder
+    if d and d != "general":
+        for keywords, folder in _CATEGORY_RULES:
+            if any(k in d for k in keywords):
+                return folder
+    t = (task or "").lower()
+    if t:
+        for keywords, folder in _TASK_FALLBACK:
+            if any(k in t for k in keywords):
+                return folder
     return "00_Inbox"
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from memory_router.memory.sqlite_store import Memory
-from memory_router.memory.obsidian.models import ConceptLink, KnowledgeNote
+from memory_router.memory.obsidian.models import ConceptLink, KnowledgeNote, category_for
 from memory_router.memory.obsidian.renderer import (
     markdown_to_memory,
     memory_to_markdown,
@@ -148,6 +148,35 @@ class TestKnowledgeNote:
         assert ".." not in note.rel_path
         assert note.rel_path.startswith("02_Research/")
         assert note.rel_path.endswith(".md")
+
+
+class TestCategoryFor:
+    def test_software_domain(self):
+        assert category_for("software") == "01_Projects"
+
+    def test_research_domains(self):
+        assert category_for("ml") == "02_Research"
+        assert category_for("finance") == "02_Research"
+        assert category_for("legal") == "02_Research"
+        assert category_for("medical") == "02_Research"
+
+    def test_general_falls_back_to_task(self):
+        # The classifier's default domain must not all dump into Inbox.
+        assert category_for("general", "explain") == "02_Research"
+        assert category_for("general", "code") == "01_Projects"
+        assert category_for("general", "agentic") == "03_Decisions"
+        assert category_for("general", "chat") == "05_Conversations"
+
+    def test_general_no_task_is_inbox(self):
+        assert category_for("general", "general") == "00_Inbox"
+        assert category_for("general", "") == "00_Inbox"
+
+    def test_empty_domain_is_inbox(self):
+        assert category_for("", "") == "00_Inbox"
+
+    def test_domain_wins_over_task(self):
+        # A real domain should not be overridden by task fallback.
+        assert category_for("software", "explain") == "01_Projects"
 
 
 class TestUtils:

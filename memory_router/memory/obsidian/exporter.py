@@ -115,9 +115,10 @@ class ObsidianExporter:
         learnings = [self._oneliner(m) for m in ranked[:8]]
         concepts = self._related_concepts(mems)
         tags = sorted({c for m in mems for c in (m.concepts or [])})
+        task = self._dominant_task(mems)
         return KnowledgeNote(
             title=title,
-            category=category_for(domain),
+            category=category_for(domain, task),
             domain=domain,
             summary=summary,
             key_learnings=learnings,
@@ -204,6 +205,11 @@ class ObsidianExporter:
         if needle in (mem.task or "").lower():
             return True
         return any(needle in (c or "").lower() for c in (mem.concepts or []))
+
+    @staticmethod
+    def _dominant_task(mems: List[Memory]) -> str:
+        tasks = [m.task for m in mems if m.task]
+        return max(set(tasks), key=tasks.count) if tasks else ""
 
     @staticmethod
     def _title_for(domain: str, mems: List[Memory]) -> str:
