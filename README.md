@@ -253,10 +253,10 @@ memory-router memory obsidian status
 
 ```
 MemoryRouterVault/
-├── 00_Inbox/            # unmatched domains
-├── 01_Projects/         # software/app/product memories
-├── 02_Research/         # research/science/ML memories
-├── 03_Decisions/        # architecture/ADR/tradeoff memories
+├── 00_Inbox/            # uncategorized (generic domain + generic task)
+├── 01_Projects/         # software/app/product/code/test memories
+├── 02_Research/         # research/science/ML/finance/legal/medical/explain
+├── 03_Decisions/        # architecture/ADR/tradeoff/agentic/plan memories
 ├── 04_People/           # people/contacts
 ├── 05_Conversations/    # chat/thread memories
 ├── 06_Daily/            # reserved for daily notes
@@ -264,6 +264,19 @@ MemoryRouterVault/
 ├── 99_Archive/          # backups before overwrite
 ├── Memory Router Index.md
 └── README.md            # privacy warning + .gitignore
+```
+
+**How notes are filed:** routing is driven by each memory's `domain` (from
+the rule-based classifier). When the domain is `general` — the classifier's
+default for text without a clear keyword — Memory Router falls back to the
+memory's `task` (e.g. `explain` → Research, `code` → Projects, `agentic` →
+Decisions, `chat` → Conversations) so generic memories still get sorted
+instead of all landing in `00_Inbox`. For precise filing, set the fields
+yourself when adding a memory:
+
+```bash
+memory-router memory add "RideCompare uses CatBoost for fare prediction" \
+  --domain software --task code --concepts "RideCompare,CatBoost,Flutter"
 ```
 
 **Graph View:** knowledge notes link to their related concepts and source
