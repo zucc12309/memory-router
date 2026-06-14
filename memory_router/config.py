@@ -68,6 +68,14 @@ class Config:
     adaptive_routing: bool = False       # enable outcome-learning adaptive router
     encryption_enabled: bool = False     # enable AES-256-GCM encryption for export/import (not live DB)
     mcp_rate_limit: int = 100            # MCP tool calls per minute
+    # Obsidian export layer (opt-in; SQLite stays source of truth)
+    obsidian_enabled: bool = False               # master switch for the export layer
+    obsidian_vault_path: str = ""                # absolute path to the vault directory
+    obsidian_export_mode: str = "knowledge_notes"  # knowledge_notes | raw | both
+    obsidian_edge_threshold: float = 0.6         # min mycelium weight to emit as a wikilink
+    obsidian_generate_backlinks: bool = True     # render mycelium edges as [[wikilinks]]
+    obsidian_include_raw_memories: bool = False  # also emit one note per memory
+    obsidian_redact_sensitive_data: bool = True  # strip secrets/PII before writing notes
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -134,6 +142,7 @@ def is_initialized() -> bool:
 
 _VALID_MODES = {"local", "api", "hybrid", "ruflo"}
 _VALID_PROVIDERS = {"ollama", "openai", "anthropic", "gemini", "ruflo"}
+_VALID_OBSIDIAN_MODES = {"knowledge_notes", "raw", "both"}
 
 # Range constraints for numeric fields: (min, max)
 _RANGE_CONSTRAINTS = {
@@ -142,6 +151,7 @@ _RANGE_CONSTRAINTS = {
     "max_relevant_memories": (0, 50),
     "working_memory_capacity": (1, 200),
     "mcp_rate_limit": (1, 10_000),
+    "obsidian_edge_threshold": (0.0, 10.0),
 }
 
 
@@ -168,6 +178,11 @@ def set_value(key: str, value: Any) -> Config:
         value = normalize_ollama_model_name(value)
         if not value:
             raise ValueError("local_model must be a real Ollama model id, e.g. llama3.1:8b")
+    if key == "obsidian_export_mode" and value not in _VALID_OBSIDIAN_MODES:
+        raise ValueError(
+            f"Invalid obsidian_export_mode '{value}'. "
+            f"Valid: {', '.join(sorted(_VALID_OBSIDIAN_MODES))}"
+        )
 
     # Validate numeric ranges
     if key in _RANGE_CONSTRAINTS:

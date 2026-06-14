@@ -222,6 +222,81 @@ memory-router stats --reset
 
 ---
 
+## Obsidian export — see your memory as a knowledge graph
+
+Memory Router can project the Memory Palace into an [Obsidian](https://obsidian.md)
+vault: human-readable Markdown notes you can browse, edit, and explore in
+**Graph View** — with your mycelium associations rendered as `[[wikilinks]]`.
+
+**SQLite stays the source of truth.** The vault is a one-way, regenerable
+projection. Retrieval never reads it; disabling the feature changes nothing.
+It's **off by default**.
+
+```bash
+# One-time: scaffold the vault, save config, enable the feature
+memory-router memory obsidian init --vault ~/Documents/MemoryRouterVault
+
+# Export consolidated knowledge notes (Projects/Research/Decisions/People/…)
+memory-router memory obsidian export
+
+# Export knowledge notes + one note per raw memory
+memory-router memory obsidian export --all
+
+# Export a single project's notes
+memory-router memory obsidian export --project RideCompare
+
+# Show status: enabled, vault path, memory count, notes exported, last export
+memory-router memory obsidian status
+```
+
+**Vault structure:**
+
+```
+MemoryRouterVault/
+├── 00_Inbox/            # unmatched domains
+├── 01_Projects/         # software/app/product memories
+├── 02_Research/         # research/science/ML memories
+├── 03_Decisions/        # architecture/ADR/tradeoff memories
+├── 04_People/           # people/contacts
+├── 05_Conversations/    # chat/thread memories
+├── 06_Daily/            # reserved for daily notes
+├── 90_Raw_Memories/     # one lossless note per memory (opt-in)
+├── 99_Archive/          # backups before overwrite
+├── Memory Router Index.md
+└── README.md            # privacy warning + .gitignore
+```
+
+**Graph View:** knowledge notes link to their related concepts and source
+memories; raw memory notes link to mycelium neighbours. Open Obsidian's Graph
+View and the associations Memory Router learned become a navigable web. Edge
+weights are preserved as comments so nothing is lost:
+
+```markdown
+## Related Concepts
+- [[CatBoost]] <!-- weight 0.82 -->
+- [[Flutter]]  <!-- weight 0.74 -->
+```
+
+**Privacy:** the vault may contain sensitive memories. `init` writes a `.gitignore`
+that ignores the whole vault and a README warning. With
+`obsidian_redact_sensitive_data` on (default), API keys, tokens, JWTs, and emails
+are stripped from notes before they're written (one-way — the originals stay in
+SQLite). Do **not** commit or cloud-sync the vault without reviewing it.
+
+Configure via `memory-router config set`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `obsidian_enabled` | `false` | Master switch (set by `init`) |
+| `obsidian_vault_path` | `""` | Vault directory (set by `init`) |
+| `obsidian_export_mode` | `knowledge_notes` | `knowledge_notes` \| `raw` \| `both` |
+| `obsidian_edge_threshold` | `0.6` | Min mycelium weight to emit as a wikilink |
+| `obsidian_generate_backlinks` | `true` | Render mycelium edges as `[[wikilinks]]` |
+| `obsidian_include_raw_memories` | `false` | Also emit one note per memory |
+| `obsidian_redact_sensitive_data` | `true` | Strip secrets/PII before writing |
+
+---
+
 ### MCP server — plug into Claude Code, Cursor, Cline, Continue
 
 Memory Router runs as a [Model Context Protocol](https://modelcontextprotocol.io) server. Any MCP-compatible client can call its tools.
@@ -388,7 +463,14 @@ memory_router/
 │   ├── importer.py            # Import/export (ChatGPT, Claude, generic JSON)
 │   ├── summarizer.py          # Sentence-boundary summarizer
 │   ├── vector_store.py        # NumPy/pure-Python cosine similarity backend
-│   └── auto_capture.py        # Auto-promote useful turns to memory
+│   ├── auto_capture.py        # Auto-promote useful turns to memory
+│   └── obsidian/              # Opt-in Obsidian export layer (one-way projection)
+│       ├── vault.py           #   safe writes, backups, vault scaffold
+│       ├── exporter.py        #   knowledge/raw/project export, idempotent
+│       ├── renderer.py        #   Markdown render + lossless round-trip
+│       ├── index.py           #   content-hash manifest for incremental export
+│       ├── models.py          #   KnowledgeNote, ExportResult, folder mapping
+│       └── utils.py           #   slugify, safe paths, ISO time, redaction
 ├── providers/
 │   ├── base.py                # BaseProvider + StreamChunk interfaces
 │   ├── ollama_provider.py     # Local Ollama via HTTP (streaming)
@@ -465,6 +547,7 @@ print(report.overall)  # "ok" | "degraded" | "unhealthy"
 - [x] ~~Mycelium associative memory network~~
 - [x] ~~Encrypted export/import~~
 - [x] ~~Vector similarity backend (NumPy / pure-Python cosine)~~
+- [x] ~~Obsidian export layer with mycelium-backed Graph View~~
 - [ ] Auto-generated embeddings + ANN index (FAISS / sqlite-vec / Chroma)
 - [ ] LLM-backed concept extraction as a classifier fallback
 - [ ] LLM-based summarizer (opt-in, runs on local model)

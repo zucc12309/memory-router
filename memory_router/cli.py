@@ -66,8 +66,10 @@ app = typer.Typer(
 )
 config_app = typer.Typer(help="Inspect or change config values.")
 memory_app = typer.Typer(help="Manage the Memory Palace.")
+obsidian_app = typer.Typer(help="Project memories into an Obsidian vault (opt-in).")
 app.add_typer(config_app, name="config")
 app.add_typer(memory_app, name="memory")
+memory_app.add_typer(obsidian_app, name="obsidian")
 
 console = Console()
 
@@ -1382,6 +1384,138 @@ def memory_similar(
         return
 
     console.print(_memory_table(similar, title=f"Similar memories (threshold={threshold})"))
+
+
+# ---------- obsidian export ----------
+
+def _obsidian_components(cfg: Config):
+    """Build (store, vault, exporter) for the configured vault, or exit."""
+    from .memory.obsidian import ObsidianExporter, ObsidianVault
+
+    if not cfg.obsidian_vault_path:
+        console.print(
+            "[yellow]No Obsidian vault configured. Run "
+            "[bold]memory-router memory obsidian init --vault <path>[/bold] first.[/yellow]"
+        )
+        raise typer.Exit(code=1)
+    store = MemoryStore()
+    vault = ObsidianVault(cfg.obsidian_vault_path)
+    mycelium = _get_mycelium(store, cfg)
+    exporter = ObsidianExporter(store, vault, cfg, mycelium=mycelium)
+    return store, vault, exporter
+
+
+def _render_export_result(result) -> None:
+    rows = [
+        ("Notes created", str(result.notes_created)),
+        ("Notes updated", str(result.notes_updated)),
+        ("Notes skipped (unchanged)", str(result.notes_skipped)),
+        ("Knowledge notes", str(result.knowledge_notes_exported)),
+        ("Raw memory notes", str(result.raw_memories_exported)),
+        ("Secrets redacted", str(result.redactions)),
+    ]
+    console.print(_summary_panel("Obsidian export", rows, border_style="green"))
+    for warning in result.warnings:
+        console.print(f"[yellow]warning:[/yellow] {warning}")
+
+
+@obsidian_app.command("init")
+def obsidian_init(
+    vault: Path = typer.Option(..., "--vault", help="Path to the Obsidian vault directory."),
+):
+    """Create the vault scaffold, save config, and enable the integration."""
+    _require_init()
+    from .memory.obsidian import ObsidianVault
+
+    vault_path = vault.expanduser().resolve()
+    ObsidianVault(vault_path).init()
+
+    cfg = load_config()
+    cfg.obsidian_enabled = True
+    cfg.obsidian_vault_path = str(vault_path)
+    save_config(cfg)
+
+    console.print(_summary_panel(
+        "Obsidian vault ready",
+        [
+            ("Vault", str(vault_path)),
+            ("Enabled", "yes"),
+            ("Export mode", cfg.obsidian_export_mode),
+            ("Redaction", "on" if cfg.obsidian_redact_sensitive_data else "off"),
+        ],
+        border_style="green",
+    ))
+    console.print(
+        "Next: [bold]memory-router memory obsidian export[/bold] — then open the "
+        "vault in Obsidian and switch on Graph View.\n"
+        "[dim]The vault may contain sensitive memories; a .gitignore is included.[/dim]"
+    )
+
+
+@obsidian_app.command("export")
+def obsidian_export(
+    all_notes: bool = typer.Option(False, "--all", help="Export knowledge notes AND raw memories."),
+    raw: bool = typer.Option(False, "--raw", help="Export raw memory notes only."),
+    project: Optional[str] = typer.Option(None, "--project", help="Export a single project's notes."),
+):
+    """Export memories into the Obsidian vault (idempotent)."""
+    cfg = _require_init()
+    if not cfg.obsidian_enabled:
+        console.print(
+            "[yellow]Obsidian export is disabled. Enable it with "
+            "[bold]memory-router memory obsidian init --vault <path>[/bold].[/yellow]"
+        )
+        raise typer.Exit(code=1)
+
+    _, _, exporter = _obsidian_components(cfg)
+
+    if project:
+        result = exporter.export_project(project)
+    elif raw:
+        result = exporter.export_raw_memories()
+    elif all_notes or cfg.obsidian_export_mode == "both":
+        result = exporter.export_all()
+    elif cfg.obsidian_export_mode == "raw":
+        result = exporter.export_raw_memories()
+    else:
+        result = exporter.export_knowledge_notes()
+        if cfg.obsidian_include_raw_memories:
+            result.merge(exporter.export_raw_memories())
+            exporter.index.save()
+
+    _render_export_result(result)
+
+
+@obsidian_app.command("status")
+def obsidian_status():
+    """Show Obsidian integration status, vault path, and export stats."""
+    cfg = _require_init()
+    from .memory.obsidian import ObsidianVault, VaultIndex
+
+    rows = [
+        ("Enabled", "yes" if cfg.obsidian_enabled else "no"),
+        ("Vault path", cfg.obsidian_vault_path or "(not set)"),
+        ("Export mode", cfg.obsidian_export_mode),
+        ("Edge threshold", f"{cfg.obsidian_edge_threshold:.2f}"),
+        ("Backlinks", "on" if cfg.obsidian_generate_backlinks else "off"),
+        ("Redaction", "on" if cfg.obsidian_redact_sensitive_data else "off"),
+    ]
+
+    store = MemoryStore()
+    rows.append(("Memories in store", str(len(store.list_all(limit=1_000_000)))))
+
+    if cfg.obsidian_vault_path:
+        vault = ObsidianVault(cfg.obsidian_vault_path)
+        rows.append(("Vault initialized", "yes" if vault.is_initialized() else "no"))
+        idx = VaultIndex(cfg.obsidian_vault_path)
+        rows.append(("Notes exported", str(idx.note_count)))
+        if idx.last_export:
+            rows.append(("Last export", time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(idx.last_export))))
+        else:
+            rows.append(("Last export", "never"))
+
+    console.print(_summary_panel("Obsidian status", rows, border_style="cyan"))
 
 
 # ---------- routing report ----------
